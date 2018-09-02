@@ -1,0 +1,2 @@
+CREATE USER [reporting] WITHOUT LOGIN
+GO

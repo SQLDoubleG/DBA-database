@@ -1,0 +1,2 @@
+CREATE USER [dbaMonitoringUser] WITHOUT LOGIN
+GO
