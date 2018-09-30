@@ -29,6 +29,8 @@ GO
 --				31/10/2016 - SZO - Included ability to check definition of check constraints 
 --				01/11/2016 - SZO - Included ability to check definition of default constraints 
 --				16/11/2016 - SZO - Changes script to group check and default constraints together 
+--				30/09/2018 - RAG - Added specific query for foreign keys that will desplay 
+--										the referenced column and referential actions
 -- ============================================= 
 CREATE PROCEDURE [dbo].[DBA_strSQLSearch] 
 	@pattern		SYSNAME, 
@@ -87,7 +89,7 @@ BEGIN
 							ON m.object_id = o.object_id 
 					WHERE ( o.name LIKE ''%'' + @pattern + ''%'' OR m.definition LIKE ''%'' + @pattern + ''%'' ) 
 						-- handled in the final union, creates duplicate results. 
-						AND o.type_desc NOT IN (''CHECK_CONSTRAINT'', ''DEFAULT_CONSTRAINT'') 
+						AND o.type_desc NOT IN (''CHECK_CONSTRAINT'', ''DEFAULT_CONSTRAINT'', ''FOREIGN_KEY_CONSTRAINT'') 
 						AND o.is_ms_shipped = 0 
 				UNION  
 				SELECT DB_NAME() 
@@ -117,6 +119,23 @@ BEGIN
 					WHERE (dc.[definition] LIKE ''%'' + @pattern + ''%'' OR cc.[definition] LIKE ''%'' + @pattern + ''%'' 
 							OR dc.name LIKE ''%'' + @pattern + ''%'' OR cc.name LIKE ''%'' + @pattern + ''%'') 
 						AND o.is_ms_shipped = 0 
+			UNION 
+			SELECT DB_NAME() 
+					, QUOTENAME(OBJECT_SCHEMA_NAME(o.[object_id])) + ''.'' + QUOTENAME(o.name) 
+					, o.type_desc 
+					, ''REFERENCES '' + QUOTENAME(OBJECT_SCHEMA_NAME(fk.referenced_object_id)) + ''.'' 
+							+ QUOTENAME(OBJECT_NAME(fk.referenced_object_id)) + ''.''  
+							+ QUOTENAME(COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id))
+							+ '' ON DELETE '' + fk.delete_referential_action_desc COLLATE DATABASE_DEFAULT
+							+ '', ON UPDATE '' + fk.delete_referential_action_desc COLLATE DATABASE_DEFAULT
+				FROM sys.objects AS o 
+					INNER JOIN sys.foreign_keys AS fk
+						ON fk.[object_id] = o.[object_id] 
+					LEFT JOIN sys.foreign_key_columns AS fkc
+						ON fkc.constraint_object_id = fk.object_id
+
+				WHERE o.name LIKE ''%'' + @pattern + ''%'' 
+					AND o.is_ms_shipped = 0 
  
 			IF OBJECT_ID(''sysarticles'') IS NOT NULL BEGIN  
 				INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
@@ -155,9 +174,4 @@ BEGIN
  
 	DROP TABLE #result 
 END 
- 
- 
- 
- 
- 
 GO

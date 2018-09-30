@@ -28,10 +28,7 @@ GO
 --				2018-03-26 RAG - Added system databases
 --				2018-09-29 RAG - Removed file and filegroup info and added FreeSpaceMB
 -- =============================================
-CREATE PROCEDURE [dbo].[DBA_databaseSizeInfo]
-	@dbname				SYSNAME = NULL
-AS
-BEGIN
+DECLARE @dbname				SYSNAME 
 
 SET NOCOUNT ON
 
@@ -101,6 +98,6 @@ SELECT [db_name]
 		FOR type_desc IN ([ROWS],[LOG],[FILESTREAM],[FULLTEXT],[USED])
 	) AS p
 
-END
+Error:
 
 GO
