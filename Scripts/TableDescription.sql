@@ -44,7 +44,27 @@ GO
 --				04/10/2016 RAG Changes due to case sensitivity (column definition) 
 --				15/02/2017 RAG Changed table type to include Clustered columnstore by getting indexes.type_desc instead of hardcoded HEAP and CLUSTERED 
 --				 
--- ============================================= 
+--				30/09/2018 RAG Created new Dependencies section
+--								- Added dependant function as tempdb object 
+-- =============================================
+-- Dependencies:This Section will create on tempdb any dependancy
+-- =============================================
+USE tempdb
+GO
+CREATE FUNCTION [dbo].[getNumericSQLVersion](
+	@ProductVersion NVARCHAR(128)
+)
+	RETURNS DECIMAL(3,1)
+AS
+BEGIN
+	DECLARE @version NVARCHAR(128) = ISNULL(@ProductVersion, CONVERT(NVARCHAR(128),SERVERPROPERTY('ProductVersion')))
+	RETURN CONVERT(DECIMAL(3,1), (LEFT( @version,  CHARINDEX('.', @version, 0) + 1 )) )
+END
+GO
+-- =============================================
+-- END of Dependencies
+-- =============================================
+
 DECLARE @dbname				SYSNAME = NULL 
 		, @schemaName		SYSNAME = NULL 
 		, @tableName		SYSNAME = NULL 
@@ -215,7 +235,7 @@ WHILE @countDBs <= @numDBs BEGIN
 					ON ius.object_id = i.object_id  
 				OUTER APPLY (
 					SELECT  
-							') +  CASE WHEN DBA.dbo.getNumericSQLVersion(NULL) > 11 THEN CONVERT(NVARCHAR(MAX), ' 
+							') +  CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) > 11 THEN CONVERT(NVARCHAR(MAX), ' 
 							CASE WHEN (tbl.is_memory_optimized=0) THEN ') ELSE CONVERT(NVARCHAR(MAX),'') END  
 						+ CONVERT(NVARCHAR(MAX), ' 
 								ISNULL(( 
@@ -230,7 +250,7 @@ WHILE @countDBs <= @numDBs BEGIN
 								- (SELECT SUM (CASE WHEN(index_id < 2) THEN (in_row_data_page_count + lob_used_page_count + row_overflow_used_page_count) ELSE 0 END) 
 									FROM sys.dm_db_partition_stats WHERE object_id = tbl.object_id) 
 								) * 8, 0.0) 
-						') +  CASE WHEN DBA.dbo.getNumericSQLVersion(NULL) > 11 THEN CONVERT(NVARCHAR(MAX),' 
+						') +  CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) > 11 THEN CONVERT(NVARCHAR(MAX),' 
 							else 
 								isnull((select (tms.[memory_used_by_indexes_kb]) 
 								from [sys].[dm_db_xtp_table_memory_stats] tms 
@@ -509,4 +529,11 @@ DROP TABLE #resultColumns
 DROP TABLE #db_triggers 
 DROP TABLE #index_usage_stats 
 	
+GO
+-- =============================================
+-- Dependencies:This Section will remove any dependancy
+-- =============================================
+USE tempdb
+GO
+DROP FUNCTION [dbo].[getNumericSQLVersion]
 GO
