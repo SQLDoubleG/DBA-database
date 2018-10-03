@@ -67,6 +67,17 @@ BEGIN
 
 END
 GO
+CREATE FUNCTION [dbo].[getFileNameFromPath](
+	@path NVARCHAR(256)
+)
+RETURNS SYSNAME
+AS
+BEGIN
+
+	DECLARE @slashPos	INT		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END
+	RETURN RIGHT( @path, @slashPos ) 
+END
+GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
@@ -231,8 +242,8 @@ SELECT	f.database_id
 			END AS [AutoGrowth/Maxsize]
 		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 100. / f.size) ) AS percentage_used
 		, CASE WHEN f.type_desc = 'LOG' THEN d.log_reuse_wait_desc ELSE 'n/a' END AS log_reuse_wait_desc
-		, REPLACE (f.physical_name, [DBA].[dbo].[getFileNameFromPath](f.physical_name), '') AS [Path]
-		, [DBA].[dbo].[getFileNameFromPath](f.physical_name) AS [FileName]
+		, REPLACE (f.physical_name, [tempdb].[dbo].[getFileNameFromPath](f.physical_name), '') AS [Path]
+		, [tempdb].[dbo].[getFileNameFromPath](f.physical_name) AS [FileName]
 		, CONVERT(DECIMAL(10,2), vs.SizeMB / 1024.) AS DriveSizeGB
 		, CONVERT(DECIMAL(10,2), vs.FreeMB / 1024.) AS DriveFreeGB
 		, vs.FreeMB * 100 / SizeMB AS DriveFreePercent
@@ -271,4 +282,6 @@ GO
 USE tempdb
 GO
 DROP FUNCTION [dbo].[getDriveFromFullPath]
+GO
+DROP FUNCTION [dbo].[getFileNameFromPath]
 GO

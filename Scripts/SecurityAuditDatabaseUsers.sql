@@ -34,6 +34,23 @@ GO
 -- Params are concatenated to the @sql string to avoid problems in databases with different collation than [DBA]
 --
 -- =============================================
+-- Dependencies:This Section will create on tempdb any dependancy
+-- =============================================
+USE tempdb
+GO
+CREATE FUNCTION [dbo].[getNumericSQLVersion](
+	@ProductVersion NVARCHAR(128)
+)
+	RETURNS DECIMAL(3,1)
+AS
+BEGIN
+	DECLARE @version NVARCHAR(128) = ISNULL(@ProductVersion, CONVERT(NVARCHAR(128),SERVERPROPERTY('ProductVersion')))
+	RETURN CONVERT(DECIMAL(3,1), (LEFT( @version,  CHARINDEX('.', @version, 0) + 1 )) )
+END
+GO
+-- =============================================
+-- END of Dependencies
+-- =============================================
 DECLARE	@dbname				sysname = NULL
 	  , @db_principal_name	sysname = NULL
 	  , @srv_principal_name sysname = NULL
@@ -140,7 +157,7 @@ WHILE @countDBs <= @numDBs BEGIN
 									ELSE '''' 
 								END AS DROP_USER_SCHEMA
 						, (SELECT ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
-											CASE WHEN DBA.dbo.getNumericSQLVersion(NULL) >= 11 
+											CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) >= 11 
 													THEN ''ALTER ROLE '' +  QUOTENAME(dbr.name) + '' DROP MEMBER '' + QUOTENAME(dbp.name)
 													ELSE '' EXECUTE sp_droprolemember '' + QUOTENAME(dbr.name) + '', '' + QUOTENAME(dbp.name) 
 											END + CHAR(10) + ''GO'' + CHAR(10) 
@@ -362,4 +379,11 @@ SELECT DB_NAME (dbp.database_id) AS database_name
 DROP TABLE #all_db_users;
 DROP TABLE #all_db_permissions;
 
+GO
+-- =============================================
+-- Dependencies:This Section will remove any dependancy
+-- =============================================
+USE tempdb
+GO
+DROP FUNCTION [dbo].[getNumericSQLVersion]
 GO

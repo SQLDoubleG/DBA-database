@@ -141,7 +141,7 @@ SELECT  @@SERVERNAME AS server_name
 			WHEN s.freq_type = 4	THEN 'Every' + CASE WHEN s.freq_interval > 1 THEN ' ' ELSE '' END + ISNULL(NULLIF(CONVERT(VARCHAR, s.freq_interval),1),'') + ' Day' + CASE WHEN s.freq_interval > 1 THEN 's' ELSE '' END
 			WHEN s.freq_type = 8	THEN -- Weekly
 											ISNULL( STUFF( (SELECT N', ' + name 
-																FROM DBA.dbo.DaysOfWeekBitWise AS B 
+																FROM #DaysOfWeekBitWise AS B 
 																WHERE B.bitValue & s.freq_interval = B.bitValue 
 																	AND s.freq_type = 8
 																FOR XML PATH('') ), 1, 2, '' ), 'None' )
