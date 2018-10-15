@@ -31,6 +31,7 @@ GO
 --				16/11/2016 - SZO - Changes script to group check and default constraints together 
 --				30/09/2018 - RAG - Added specific query for foreign keys that will desplay 
 --										the referenced column and referential actions
+--				14/10/2018 - RAG - Added TRY CATCH block to allow databases to be non accessible like secondary non-readble 
 -- ============================================= 
 DECLARE @pattern		SYSNAME = NULL, 
 		@databaseName	SYSNAME = NULL 
@@ -55,6 +56,8 @@ DECLARE @sql				NVARCHAR(MAX)
 		, @numDB			INT 
 		, @countResults		INT = 1 
 		, @numResults		INT 
+
+DECLARE @errMsg				NVARCHAR(500)
 
 -- All online databases 
 INSERT INTO @databases  
@@ -148,7 +151,13 @@ WHILE @countDB <= @numDB BEGIN
 		END  
 	' 
 	--SELECT @sql
-	EXECUTE sp_executesql @sql 
+	BEGIN TRY
+		EXECUTE sp_executesql @sql 
+	END TRY
+	BEGIN CATCH
+		SET @errMsg = 'There was an error accessing ' + QUOTENAME(@dbname) 
+		PRINT @errMsg
+	END CATCH
 
 	SET @countDB = @countDB + 1 
 END		 
