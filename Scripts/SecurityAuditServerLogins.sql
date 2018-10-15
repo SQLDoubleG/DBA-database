@@ -21,18 +21,20 @@ GO
 --				This SP returns
 --					- Server logins with server roles and permissions, logins included if it's a Windows Group, groups the login belong to and database users mapped to the login
 --
--- Change log:	2014-03-04 RAG	- Removed the last 2 resultsets and included that info into que main one, columns [IncludedLogins] and [IncludedInWindowsGroups]
+-- Change log:	04/03/2014 RAG	- Removed the last 2 resultsets and included that info into que main one, columns [IncludedLogins] and [IncludedInWindowsGroups]
 --								- Functionality to search a AD user when is included in a Windows Group
---				2014-05-15 RAG	- Included list of database users the login is mapped to 
---				2014-09-09 RAG	- Added column CREATE_LOGIN, which contain the script required to recreate the login and its server roles if any
---				2016-05-13 RAG	- Fixed bug when scripting server roles
---				2017-03-14 RAG	- Removed deprecated view syslogins
+--				15/05/2014 RAG	- Included list of database users the login is mapped to 
+--				09/09/2014 RAG	- Added column CREATE_LOGIN, which contain the script required to recreate the login and its server roles if any
+--				13/05/2016 RAG	- Fixed bug when scripting server roles
+--				14/03/2017 RAG	- Removed deprecated view syslogins
 --								- Added state_desc to the permisssion list (DENY, REVOKE, GRANT, GRANT_WITH_GRANT_OPTION)
 --								- Added server permisssions to the CREATE LOGIN statement
---				2018-04-30 RAG	- Added check for existance to the CREATE_LOGIN statement
+--				30/04/2018 RAG	- Added check for existance to the CREATE_LOGIN statement
 --								- Don't script [sa] login
---				30/09/2018 RAG Created new Dependencies section
+--				30/09/2018 RAG 	- Created new Dependencies section
 --								- Added dependant function as tempdb object 
+--				11/10/2018 RAG 	- Added try catch block to handle windows groups that fail to get information
+--
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependancy
 -- =============================================
@@ -57,6 +59,7 @@ DECLARE	@loginName	SYSNAME = NULL
 SET NOCOUNT ON
 
 DECLARE @sqlString		NVARCHAR(4000)
+DECLARE @errMsg			NVARCHAR(4000)
 
 DECLARE @groupName		SYSNAME
 		, @numGroups	INT
@@ -93,8 +96,14 @@ WHILE @countGroups <= @numGroups BEGIN
 
 	SET @sqlString = 'EXEC XP_LOGININFO ' + QUOTENAME(@groupName) + ', [members]'
 
-	INSERT INTO #usersInGroups
-		EXECUTE sp_executesql @sqlString 
+	BEGIN TRY
+		INSERT INTO #usersInGroups
+			EXECUTE sp_executesql @sqlString 
+	END TRY
+	BEGIN CATCH
+		SET @errMsg = 'There was an error retrieving information for Windows AD Group ' + QUOTENAME(@groupName);
+		PRINT @errMsg;
+	END CATCH
 
 	SET @countGroups += 1
 
