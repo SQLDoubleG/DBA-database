@@ -36,6 +36,9 @@ GO
 --								- Added @orderBy to sort ascending or descending to allow copy paste 
 -- 									the restore commands in the right order
 --								- Changed order of the returned columns to have finished date at first glance
+--				16/10/2018 RAG	- Changed the behaviour of @orderBy so it will affect the final resultset which will be
+-- 									always the newest TOP (@numBkp) rows
+--
 -- =============================================
 CREATE PROCEDURE [dbo].[DBA_backupSizeInfo]
 	@dbname			SYSNAME = NULL
@@ -91,9 +94,7 @@ NULL -> All types will be included', 16, 0) WITH NOWAIT
 				, b.backup_finish_date
 				, b.media_set_id
 				--, mf.physical_device_name
-				, ROW_NUMBER() OVER (PARTITION BY database_name 
-										ORDER BY CASE WHEN @orderBy = 'ASC' THEN backup_set_id ELSE NULL END ASC
-												, CASE WHEN @orderBy = 'DESC' THEN backup_set_id ELSE NULL END DESC) AS RowNum			
+				, ROW_NUMBER() OVER (PARTITION BY database_name ORDER BY backup_set_id DESC) AS RowNum			
 			FROM msdb.dbo.backupset as b
 				--INNER JOIN msdb.dbo.backupmediafamily as mf
 				--	ON mf.media_set_id = b.media_set_id
@@ -120,6 +121,9 @@ NULL -> All types will be included', 16, 0) WITH NOWAIT
 							FROM msdb.dbo.backupmediafamily as mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) + 'WITH NORECOVERY' AS RESTORE_BACKUP
 		FROM cte
 		WHERE RowNum <= @numBkp
-		ORDER BY database_name ASC, RowNum ASC
+		ORDER BY database_name ASC
+			-- RowNum is descending, so we need to invert the order, this is not a mistake!
+			, CASE WHEN @orderBy = 'ASC' THEN RowNum ELSE NULL END DESC
+			, CASE WHEN @orderBy = 'DESC' THEN RowNum ELSE NULL END ASC 
 	END
 GO
