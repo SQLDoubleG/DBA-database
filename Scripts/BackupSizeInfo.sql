@@ -40,7 +40,9 @@ GO
 --								- Changed order of the returned columns to have finished date at first glance
 --				16/10/2018 RAG	- Changed the behaviour of @orderBy so it will affect the final resultset which will be
 -- 									always the newest TOP (@numBkp) rows
---
+--				20/11/2018 RAG	- Added join to sys.databases so now we get all databases in the server,
+--									 regardless have been ever backed up or not.
+--								- Added is_preffered replica using [fn_hadr_backup_is_preferred_replica]
 -- =============================================
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependant function
@@ -71,11 +73,13 @@ GO
 USE [master]
 GO
 DECLARE @dbname			SYSNAME = NULL
-		, @backupType	CHAR(1) = NULL
-		, @numBkp		INT = 16
+		, @backupType	CHAR(1) = 'X'
+		, @numBkp		INT = 1
 		, @orderBy		VARCHAR(10) = 'ASC'
 	
 SET NOCOUNT ON
+
+DECLARE @SQL NVARCHAR(4000)
 
 SET @numBkp		= ISNULL(@numBkp, 1) 
 SET @orderBy	= ISNULL(@orderBy, 'DESC') 
@@ -101,6 +105,20 @@ DESC-> To sort by date asceding', 16, 0) WITH NOWAIT
 	GOTO OnError
 END
 
+CREATE TABLE #is_preferred_replica (
+	database_id INT NOT NULL
+	, is_preferred_replica TINYINT NOT NULL)
+
+IF ISNULL(CONVERT(TINYINT, SERVERPROPERTY('IsHadrEnabled')), 0) = 1 BEGIN 
+	SET @SQL = N'SELECT database_id, sys.fn_hadr_backup_is_preferred_replica(name) FROM sys.databases'
+	INSERT INTO #is_preferred_replica
+	EXECUTE sp_executesql @SQL
+END
+ELSE BEGIN
+	INSERT INTO #is_preferred_replica
+	SELECT database_id, 1 FROM sys.databases
+END
+	
 ;WITH cte AS (
 	SELECT	b.server_name
 			, b.database_name
@@ -130,9 +148,13 @@ END
 			AND (type = ISNULL(@backupType, type) OR (@backupType = 'X' AND type <> 'L'))
 )
 
-SELECT 	server_name
-		, database_name
-		, backup_type
+SELECT 	ISNULL(server_name, @@SERVERNAME) AS server_name
+		, d.name AS database_name
+		, CASE WHEN pr.is_preferred_replica = 1 THEN 'Yes' ELSE 'No' END AS is_preferred_replica
+		, ISNULL(backup_type, 'n/a') AS backup_type
+		, d.create_date
+		, d.state_desc
+		, d.recovery_model_desc
 		, CONVERT(DATETIME2(0), backup_finish_date) AS backup_finish_date
 		, STUFF((SELECT ', ' + physical_device_name FROM msdb.dbo.backupmediafamily as mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) AS physical_device_name
 		, CONVERT(INT, backup_size / 1024 /1024 ) AS size_MB
@@ -146,12 +168,18 @@ SELECT 	server_name
 		, 'RESTORE ' + CASE WHEN type = 'L' THEN 'LOG ' ELSE 'DATABASE ' END + QUOTENAME(database_name) + CHAR(10) + CHAR(9) + 'FROM ' + 
 			STUFF( (SELECT ', DISK = ''' + physical_device_name + '''' + CHAR(10) + CHAR(9)
 						FROM msdb.dbo.backupmediafamily as mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) + 'WITH NORECOVERY' AS RESTORE_BACKUP
-	FROM cte
-	WHERE RowNum <= @numBkp
+	FROM sys.databases as d
+		LEFT JOIN cte
+			ON d.name = cte.database_name
+				AND RowNum <= @numBkp
+		LEFT JOIN #is_preferred_replica AS pr
+			ON pr.database_id = d.database_id
 	ORDER BY database_name ASC
 		-- RowNum is descending, so we need to invert the order, this is not a mistake!
 		, CASE WHEN @orderBy = 'ASC' THEN RowNum ELSE NULL END DESC
 		, CASE WHEN @orderBy = 'DESC' THEN RowNum ELSE NULL END ASC 
+
+DROP TABLE #is_preferred_replica
 
 OnError:
 GO
@@ -162,4 +190,3 @@ USE tempdb
 GO
 DROP FUNCTION [dbo].[formatSecondsToHR]
 GO
-
