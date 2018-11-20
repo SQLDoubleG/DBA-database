@@ -174,6 +174,7 @@ SELECT 	ISNULL(server_name, @@SERVERNAME) AS server_name
 				AND RowNum <= @numBkp
 		LEFT JOIN #is_preferred_replica AS pr
 			ON pr.database_id = d.database_id
+	WHERE d.name = ISNULL(@dbname, d.name)
 	ORDER BY database_name ASC
 		-- RowNum is descending, so we need to invert the order, this is not a mistake!
 		, CASE WHEN @orderBy = 'ASC' THEN RowNum ELSE NULL END DESC
