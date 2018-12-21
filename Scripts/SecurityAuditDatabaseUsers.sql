@@ -30,6 +30,7 @@ GO
 --                         16/03/2016 SZO - Added column granularity to [permission_list] column
 --                         24/01/2018 RAG - Added column [included_users] which will display all users that are member of a database role
 --											Removed condition to exclude system database roles
+--                         05/11/2018 RAG - Added column drop temp table #databases
 --
 -- Params are concatenated to the @sql string to avoid problems in databases with different collation than [DBA]
 --
@@ -376,6 +377,7 @@ SELECT DB_NAME (dbp.database_id) AS database_name
 										@srv_principal_name, sp.name, '')
 	ORDER BY database_name, dbp.principal_name, dbp.class_desc, dbp.object_name;
 
+DROP TABLE #databases;
 DROP TABLE #all_db_users;
 DROP TABLE #all_db_permissions;
 
