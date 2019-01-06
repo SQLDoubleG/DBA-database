@@ -28,6 +28,8 @@ GO
 --								- Changed the Version/Edition check since SQL Server 2016 SP1 introduced snapshots on every edition
 --								- Added dependencies
 --								- Added support for long SQL statements as result of multiple database files
+--				06/01/2019	RAG	- Added more dependant functions to calculate file name and file extension to generate better file names
+--								- Added parameter @snapshotName to allow fixed names instead of default @dbname_yyyymmddhhmmss
 --
 -- =============================================
 -- =============================================
@@ -35,11 +37,11 @@ GO
 -- =============================================
 USE [tempdb]
 GO
-CREATE FUNCTION [dbo].[formatTimeToText]()
+CREATE FUNCTION [dbo].[formatTimeToText](@datetime DATETIME)
 RETURNS VARCHAR(15)
 AS
 BEGIN	
-	RETURN LEFT(REPLACE(REPLACE(REPLACE(CONVERT(VARCHAR(15),GETDATE(),120), '-', ''), ' ', ''), ':', ''),15)
+	RETURN LEFT(REPLACE(REPLACE(REPLACE(CONVERT(VARCHAR(25),ISNULL(@datetime, GETDATE()),120), '-', ''), ' ', ''), ':', ''),25)
 END
 GO
 CREATE FUNCTION [dbo].[getFilePathFromFullPath](
@@ -53,15 +55,36 @@ BEGIN
 	RETURN ( CASE WHEN @slashPos IS NULL THEN '\' ELSE LEFT( @path, @slashPos ) END )
 END
 GO
+CREATE FUNCTION [dbo].[getFileNameFromPath](
+	@path NVARCHAR(256)
+)
+RETURNS SYSNAME
+AS
+BEGIN
+
+	DECLARE @slashPos	INT		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END
+	RETURN RIGHT( @path, @slashPos ) 
+END
+GO
+CREATE FUNCTION [dbo].[getFileExtensionFromFilename](
+	@fileName NVARCHAR(256)
+)
+RETURNS SYSNAME
+AS
+BEGIN
+	RETURN  RIGHT( @fileName, CHARINDEX( '.', REVERSE(@fileName) ) )
+END
+GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
-DECLARE	@dbname			SYSNAME	= 'ManyFiles'	
+DECLARE	@dbname			SYSNAME	= 'YourDBName'	
+		, @snapshotName	SYSNAME = 'YourSnapshotName'	-- IF NULL, it will generate @dbname_yyyymmddhhmmss
 		, @debugging	BIT		= 1		-- CALL THE SP WITH @debugging = 1 TO JUST PRINT OUT THE STATEMENTS
 
 SET NOCOUNT ON
 
-DECLARE @timetext			VARCHAR(15)		= [tempdb].[dbo].[formatTimeToText]() 
+DECLARE @timetext			VARCHAR(15)		= [tempdb].[dbo].[formatTimeToText](NULL) 
 		, @sqlString		NVARCHAR(MAX)
 		, @ErrorMsg			NVARCHAR(1000)	= N''
 		, @snapShotExt		NVARCHAR(3)		= N'.ss'
@@ -83,12 +106,17 @@ IF NOT EXISTS ( SELECT 1 FROM sys.databases WHERE name = @dbname ) BEGIN
 	GOTO OnError
 END 	
 
-SET @sqlString	= 'CREATE DATABASE ' + QUOTENAME(@dbname + '_' + @timetext) + ' ON ' + CHAR(10)
+SET @snapshotName = ISNULL(@snapshotName, @dbname + '_' + @timetext)
+
+SET @sqlString	= 'CREATE DATABASE ' + QUOTENAME(@snapshotName) + ' ON ' + CHAR(10)
 
 SET @sqlString	+= 	( SELECT STUFF(
-							(SELECT CONVERT(NVARCHAR(MAX), CHAR(10) + ', ' + '( NAME = ' + QUOTENAME(name) + ', FILENAME = ''' 
-									+ [tempdb].[dbo].[getFilePathFromFullPath](physical_name) 
-									+ name + '_' + @timetext + @snapShotExt + ''' )')
+							(SELECT CONVERT(NVARCHAR(MAX), CHAR(10) + ', ' 
+									+ '( NAME = ' + QUOTENAME(name) 
+									+ ', FILENAME = ''' + [tempdb].[dbo].[getFilePathFromFullPath](physical_name) 
+										+ REPLACE(REPLACE([tempdb].[dbo].[getFileNameFromPath](physical_name), @dbname, @snapshotName)
+													, [tempdb].[dbo].[getFileExtensionFromFilename](physical_name), @snapShotExt)
+									 + ''' )')
 								FROM sys.master_files
 								WHERE database_id = DB_ID(@dbname)
 									AND type_desc = 'ROWS'
@@ -99,7 +127,7 @@ SET @sqlString	+= CHAR(10) + 'AS SNAPSHOT OF ' + QUOTENAME(@dbname)
 SELECT CONVERT(XML, '<!--' + CHAR(10) +  @sqlString + CHAR(10) + '-->')
 
 IF @debugging = 0 BEGIN
-	EXECUTE sp_executesql @sqlString
+	EXECUTE sys.sp_executesql @sqlString = @sqlString
 END
 
 OnError:
@@ -113,4 +141,7 @@ DROP FUNCTION [dbo].[formatTimeToText]
 GO
 DROP FUNCTION [dbo].[getFilePathFromFullPath]
 GO
-
+DROP FUNCTION [dbo].[getFileNameFromPath]
+GO
+DROP FUNCTION [dbo].[getFileExtensionFromFilename]
+GO
