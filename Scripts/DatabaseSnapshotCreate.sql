@@ -25,11 +25,12 @@ GO
 -- Limitations:	Verify SQL versions and engine edition!!...
 --
 -- Log History:	21/12/2018	RAG	- Converted to script from SP
---								- Changed the Version/Edition check since SQL Server 2016 SP1 introduced snapshots on every edition
 --								- Added dependencies
+--								- Changed the Version/Edition check since SQL Server 2016 SP1 introduced snapshots on every edition
 --								- Added support for long SQL statements as result of multiple database files
 --				06/01/2019	RAG	- Added more dependant functions to calculate file name and file extension to generate better file names
 --								- Added parameter @snapshotName to allow fixed names instead of default @dbname_yyyymmddhhmmss
+--				11/01/2019	RAG	- Added ORDER BY file_id
 --
 -- =============================================
 -- =============================================
@@ -94,7 +95,7 @@ DECLARE @InstaceProductVersion		INT = ( SELECT CONVERT(INT, LEFT(CONVERT(NVARCHA
 
 -- Database snapshots, introduced in SQL Server 2005, are available only in the Enterprise editions of SQL Server 2005 onwards
 IF (@InstaceProductVersion BETWEEN 9 AND 12 AND @InstanceEngineEdition < 3) OR @InstaceProductVersion < 9 BEGIN
-	SET @ErrorMsg = N'Database snapshots are available only in the Enterprise editions of SQL Server 2005 till 2014, or 2016 onwards any edition'
+	SET @ErrorMsg = N'Database snapshots are available only in the Enterprise editions of SQL Server 2005 till 2014, or 2016 SP1 onwards any edition'
 	RAISERROR(@ErrorMsg, 16, 1, 1)
 	GOTO OnError
 END 	
@@ -116,10 +117,11 @@ SET @sqlString	+= 	( SELECT STUFF(
 									+ ', FILENAME = ''' + [tempdb].[dbo].[getFilePathFromFullPath](physical_name) 
 										+ REPLACE(REPLACE([tempdb].[dbo].[getFileNameFromPath](physical_name), @dbname, @snapshotName)
 													, [tempdb].[dbo].[getFileExtensionFromFilename](physical_name), @snapShotExt)
-									 + ''' )')
+									+ ''' )')
 								FROM sys.master_files
 								WHERE database_id = DB_ID(@dbname)
 									AND type_desc = 'ROWS'
+								ORDER BY file_id
 								FOR XML PATH('') ), 1, 3, '') )
 
 SET @sqlString	+= CHAR(10) + 'AS SNAPSHOT OF ' + QUOTENAME(@dbname)
