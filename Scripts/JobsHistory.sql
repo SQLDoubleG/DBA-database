@@ -42,6 +42,7 @@ GO
 --								- Added parameter @commandText to filter the job step command text
 --				21/02/2019 RAG 	- Fixed multiple rows per job due to adding steps
 --				15/03/2019 RAG 	- Added active_start_time and active_time for schedules
+--								- Other fixes 
 --
 -- =============================================
 -- =============================================
@@ -99,6 +100,8 @@ SET NOCOUNT ON
 
 IF ISNULL(@commandText, '') <> '' SET @includeSteps = 1
 
+SET @includeLastNexecutions = ISNULL(@includeLastNexecutions, 1)
+
 IF OBJECT_ID('tempdb..#jobHistory')			IS NOT NULL DROP TABLE #jobHistory
 IF OBJECT_ID('tempdb..#jobs')				IS NOT NULL DROP TABLE #jobs
 IF OBJECT_ID('tempdb..#monthlyRelative')	IS NOT NULL DROP TABLE #monthlyRelative
@@ -125,18 +128,30 @@ SELECT *
 		
 -- Take from history, the last run for each job
 ;WITH CTE AS(
-	SELECT jh.*
+	SELECT 	jh.job_id
+			, jh.instance_id
+			, jh.step_id
+			, jh.step_name
+			, jh.run_date
+			, jh.run_status
+			, jh.run_time
+			, jh.run_duration
+			, js.subsystem
+			, js.command
 			, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
 		FROM msdb.dbo.sysjobhistory AS jh
+			LEFT JOIN msdb.dbo.sysjobsteps AS js
+				ON js.job_id = jh.job_id
+					AND js.step_id = jh.step_id
 			INNER JOIN #jobs AS j
 				ON j.job_id = jh.job_id
-		WHERE step_id = 0 OR @includeSteps = 1
+		WHERE jh.step_id = 0 OR @includeSteps = 1
 	)
 	SELECT * 
 		INTO #jobHistory
 		FROM CTE
 	WHERE rowNumber <= @includeLastNexecutions
-		
+
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
 		, j.job_id
@@ -144,8 +159,8 @@ SELECT  @@SERVERNAME AS server_name
 		, j.name AS job_name
 		, jh.step_id
 		, jh.step_name
-		, js.subsystem
-		, js.command
+		, jh.subsystem
+		, jh.command
 		, CASE WHEN jh.run_date <> 0 THEN 
 			(CONVERT(VARCHAR, CONVERT(DATE, 
 					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 1,4)		+ '-' +
@@ -213,16 +228,14 @@ SELECT  @@SERVERNAME AS server_name
 		END AS next_run
 
 	FROM #jobs AS j
-		LEFT JOIN msdb.dbo.sysjobsteps AS js
-			ON js.job_id = j.job_id
-				AND (js.step_id = 0 OR @includeSteps = 1)
 		LEFT JOIN msdb.dbo.sysjobschedules AS jsch
 			ON jsch.job_id = j.job_id
 		LEFT JOIN msdb.dbo.sysschedules AS s
 			ON s.schedule_id = jsch.schedule_id
 		LEFT JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
-	WHERE ISNULL(js.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
+				AND (jh.step_id = 0 OR @includeSteps = 1)
+	WHERE ISNULL(jh.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
 	ORDER BY job_name, jh.rowNumber, CASE WHEN jh.step_id = 0 THEN POWER(2, 30) ELSE jh.step_id END DESC, jh.instance_id DESC
 	
 DROP TABLE #jobHistory
