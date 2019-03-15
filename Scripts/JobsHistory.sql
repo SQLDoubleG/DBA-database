@@ -29,15 +29,20 @@ GO
 --				GRANT EXECUTE ON [DBA].[dbo].[DBA_jobsHistory] TO [dbaMonitoringUser]
 -- 
 -- Log History:	
---				29/04/2015 RAG -- Added Parameter @includeSteps to display info for each step of a job
---				07/05/2015 RAG -- Added Parameters @jobName and @includeLastNexecutions to filter by name and display some history
---				13/04/2016 SZO -- Added element to ORDER BY clause so results returned by step_id with result step (step 0) returned last.
---				21/04/2016 SZO -- Modified ORDER BY clause so results display as shown in SQL Agent View History Window.
---				22/04/2016 RAG -- Renamed to [dbo].[DBA_jobsHistory] as [dbo].[DBA_jobsDescription] now will show only information about jobs, not history
---				30/06/2016 RAG -- Added column server_name and EXECUTE AS 'dbo' due to this SP will be called by dbaMonitoringUser
---				30/09/2018 RAG Created new Dependencies section
+--				29/04/2015 RAG - Added Parameter @includeSteps to display info for each step of a job
+--				07/05/2015 RAG - Added Parameters @jobName and @includeLastNexecutions to filter by name and display some history
+--				13/04/2016 SZO - Added element to ORDER BY clause so results returned by step_id with result step (step 0) returned last.
+--				21/04/2016 SZO - Modified ORDER BY clause so results display as shown in SQL Agent View History Window.
+--				22/04/2016 RAG - Renamed to [dbo].[DBA_jobsHistory] as [dbo].[DBA_jobsDescription] now will show only information about jobs, not history
+--				30/06/2016 RAG - Added column server_name and EXECUTE AS 'dbo' due to this SP will be called by dbaMonitoringUser
+--				30/09/2018 RAG - Created new Dependencies section
 --								- Added dependant function as tempdb object 
-
+--				20/10/2018 RAG - Added column [job_id_binary] to help locate output files when they user the token $(JOBID)
+--				22/11/2018 RAG 	- Added columns jobsteps.subsystem and jobsteps.command
+--								- Added parameter @commandText to filter the job step command text
+--				21/02/2019 RAG 	- Fixed multiple rows per job due to adding steps
+--				15/03/2019 RAG 	- Added active_start_time and active_time for schedules
+--
 -- =============================================
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependancy
@@ -87,15 +92,19 @@ GO
 DECLARE	@onlyActiveJobs				BIT = 0
 		, @includeSteps				BIT = 0
 		, @jobName					SYSNAME = NULL
+		, @commandText				SYSNAME = NULL
 		, @includeLastNexecutions	INT = 1
 	
 SET NOCOUNT ON
 
-IF OBJECT_ID('tempdb..#jobHistory') IS NOT NULL DROP TABLE #jobHistory
-IF OBJECT_ID('tempdb..#jobs')		IS NOT NULL DROP TABLE #jobs
+IF ISNULL(@commandText, '') <> '' SET @includeSteps = 1
 
-DECLARE @monthlyRelative TABLE (ID TINYINT NOT NULL, Name VARCHAR(15) NOT NULL)
-INSERT INTO @monthlyRelative
+IF OBJECT_ID('tempdb..#jobHistory')			IS NOT NULL DROP TABLE #jobHistory
+IF OBJECT_ID('tempdb..#jobs')				IS NOT NULL DROP TABLE #jobs
+IF OBJECT_ID('tempdb..#monthlyRelative')	IS NOT NULL DROP TABLE #monthlyRelative
+
+CREATE TABLE #monthlyRelative (ID TINYINT NOT NULL, Name VARCHAR(15) NOT NULL)
+INSERT INTO #monthlyRelative
 	VALUES (1, 'Sunday')
 			, (2, 'Monday')
 			, (3, 'Tuesday')
@@ -131,9 +140,28 @@ SELECT *
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
 		, j.job_id
+		, CONVERT(VARBINARY(85), j.job_id) AS job_id_binary
 		, j.name AS job_name
 		, jh.step_id
 		, jh.step_name
+		, js.subsystem
+		, js.command
+		, CASE WHEN jh.run_date <> 0 THEN 
+			(CONVERT(VARCHAR, CONVERT(DATE, 
+					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 1,4)		+ '-' +
+					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 5,2)		+ '-' +
+					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 7,2))))	+ ' ' +
+				tempdb.dbo.formatMStimeToHR(jh.run_time)
+			ELSE '-'
+		END AS last_run
+		, CASE 
+			WHEN jh.run_status IS NULL THEN '-'
+			WHEN jh.run_status = 0 THEN 'Failed'
+			WHEN jh.run_status = 1 THEN 'Succeeded'
+			WHEN jh.run_status = 2 THEN 'Retry'
+			WHEN jh.run_status = 3 THEN 'Canceled'
+		END AS last_run_status
+		, tempdb.dbo.formatMStimeToHR (jh.run_duration) AS last_run_duration		
 		, CASE WHEN j.enabled = 1 THEN 'Yes' ELSE 'No' END AS [enabled]
 		, SUSER_SNAME(j.owner_sid) as owner_name
 		, CASE 
@@ -154,7 +182,7 @@ SELECT  @@SERVERNAME AS server_name
 												WHEN s.freq_relative_interval = 8	THEN 'Fourth ' 
 												WHEN s.freq_relative_interval = 16	THEN 'Last ' 
 											END
-											+ (SELECT Name FROM @monthlyRelative WHERE ID = s.freq_interval) + ' of the month'
+											+ (SELECT Name FROM #monthlyRelative WHERE ID = s.freq_interval) + ' of the month'
 			WHEN s.freq_type = 64	THEN 'Starts when SQL Server Agent service starts'
 			WHEN s.freq_type = 128	THEN 'Runs when computer is idle'
 			ELSE 'None'
@@ -169,7 +197,12 @@ SELECT  @@SERVERNAME AS server_name
 			WHEN 4 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' minute'	+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
 			WHEN 8 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' hour'		+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
 			ELSE ''
+		END + 
+		CASE s.freq_subday_type 
+			WHEN 1 THEN ''
+			ELSE ', From ' + tempdb.dbo.[formatMStimeToHR](s.active_start_time) + ' till ' + tempdb.dbo.[formatMStimeToHR](s.active_end_time)			
 		END AS job_schedule
+		--, s.*
 		, CASE WHEN jsch.next_run_date <> 0 THEN 
 			(CONVERT(VARCHAR, CONVERT(DATE, 
 					SUBSTRING(CONVERT(VARCHAR(8),jsch.next_run_date), 1,4)		+ '-' +
@@ -178,33 +211,23 @@ SELECT  @@SERVERNAME AS server_name
 				tempdb.dbo.formatMStimeToHR(jsch.next_run_time)
 			ELSE '-'
 		END AS next_run
-		, CASE WHEN jh.run_date <> 0 THEN 
-			(CONVERT(VARCHAR, CONVERT(DATE, 
-					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 1,4)		+ '-' +
-					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 5,2)		+ '-' +
-					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 7,2))))	+ ' ' +
-				tempdb.dbo.formatMStimeToHR(jh.run_time)
-			ELSE '-'
-		END AS last_run
-		, CASE 
-			WHEN jh.run_status IS NULL THEN '-'
-			WHEN jh.run_status = 0 THEN 'Failed'
-			WHEN jh.run_status = 1 THEN 'Succeeded'
-			WHEN jh.run_status = 2 THEN 'Retry'
-			WHEN jh.run_status = 3 THEN 'Canceled'
-		END AS last_run_status
-		, tempdb.dbo.formatMStimeToHR (jh.run_duration) AS last_run_duration
+
 	FROM #jobs AS j
+		LEFT JOIN msdb.dbo.sysjobsteps AS js
+			ON js.job_id = j.job_id
+				AND (js.step_id = 0 OR @includeSteps = 1)
 		LEFT JOIN msdb.dbo.sysjobschedules AS jsch
 			ON jsch.job_id = j.job_id
 		LEFT JOIN msdb.dbo.sysschedules AS s
 			ON s.schedule_id = jsch.schedule_id
 		LEFT JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
+	WHERE ISNULL(js.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
 	ORDER BY job_name, jh.rowNumber, CASE WHEN jh.step_id = 0 THEN POWER(2, 30) ELSE jh.step_id END DESC, jh.instance_id DESC
 	
 DROP TABLE #jobHistory
 DROP TABLE #jobs
+DROP TABLE #monthlyRelative
 OnError:
 GO
 -- =============================================
@@ -213,4 +236,6 @@ GO
 USE tempdb
 GO
 DROP FUNCTION [dbo].[formatMStimeToHR]
+GO
+DROP TABLE #DaysOfWeekBitWise
 GO
