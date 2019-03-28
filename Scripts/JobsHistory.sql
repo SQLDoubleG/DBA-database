@@ -48,6 +48,8 @@ GO
 --				20/03/2019 RAG 	- Added ISNULL for null columns when there is no history for a job
 --								- Added column last_run_duration
 --								- Removed comments
+--				28/03/2019 RAG 	- Split the logic if we want to get steps or not
+--								- Fixed bug when a job didn't execute all the steps
 --
 -- =============================================
 -- =============================================
@@ -112,9 +114,9 @@ GO
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
 		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME = NULL
+		, @jobName					SYSNAME = 'Job Test 4'
 		, @commandText				SYSNAME = NULL
-		, @includeLastNexecutions	INT = 1
+		, @includeLastNexecutions	INT = 5
 	
 SET NOCOUNT ON
 
@@ -122,8 +124,22 @@ IF ISNULL(@commandText, '') <> '' SET @includeSteps = 1
 
 SET @includeLastNexecutions = ISNULL(@includeLastNexecutions, 1)
 
-IF OBJECT_ID('tempdb..#jobHistory')			IS NOT NULL DROP TABLE #jobHistory
-IF OBJECT_ID('tempdb..#jobs')				IS NOT NULL DROP TABLE #jobs
+IF OBJECT_ID('tempdb..#jobHistory')		IS NOT NULL DROP TABLE #jobHistory
+IF OBJECT_ID('tempdb..#jobs')			IS NOT NULL DROP TABLE #jobs
+IF OBJECT_ID('tempdb..#Step1')			IS NOT NULL DROP TABLE #Step1
+
+CREATE TABLE #jobHistory(
+	job_name		SYSNAME
+	, job_id		UNIQUEIDENTIFIER	
+	, instance_id	INT					NULL
+	, step_id		INT					NULL
+	, step_name		SYSNAME				NULL
+	, run_date		INT					NULL
+	, run_status	INT					NULL
+	, run_time		INT					NULL
+	, run_duration	INT					NULL
+	, subsystem		NVARCHAR(40)		NULL
+	, command		NVARCHAR(MAX)		NULL)
 
 --Get all jobs we're interested
 SELECT j.job_id
@@ -132,11 +148,61 @@ SELECT j.job_id
 	FROM msdb.dbo.sysjobs AS j
 	WHERE (( @onlyActiveJobs = 1 AND j.enabled = 1 ) OR @onlyActiveJobs = 0)
 		AND j.name LIKE ISNULL(@jobName, j.name)
-		
--- Take from history, the last run for each job
-;WITH CTE AS(
+
+IF @includeSteps = 0 BEGIN
+
+	-- this is the job output if any history
+	;WITH cte AS(
 	SELECT 	j.name AS job_name
-			, ISNULL(js.job_id, jh.job_id) AS job_id
+			, j.job_id
+			, jh.instance_id
+			, jh.step_id
+			, jh.step_name
+			, jh.run_date
+			, jh.run_status
+			, jh.run_time
+			, jh.run_duration
+			, '-' AS subsystem
+			, '-' AS command
+			, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
+		FROM #jobs AS j
+			LEFT JOIN msdb.dbo.sysjobhistory AS jh
+				ON jh.job_id = j.job_id
+					AND jh.step_id = 0
+	)
+	INSERT INTO #jobHistory
+		SELECT job_name
+				, job_id
+				, instance_id
+				, step_id
+				, step_name
+				, run_date
+				, run_status
+				, run_time
+				, run_duration
+				, subsystem
+				, command 
+			FROM cte
+			WHERE rowNumber <= @includeLastNexecutions 
+
+END 
+ELSE BEGIN
+	-- this is the job output if any history
+	
+	SELECT 	j.job_id
+		, jh.instance_id
+		, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
+	INTO #Step1
+	FROM #jobs AS j
+		LEFT JOIN msdb.dbo.sysjobhistory AS jh
+			ON jh.job_id = j.job_id
+				AND jh.step_id = 1
+
+	DELETE FROM #Step1 WHERE rowNumber > @includeLastNexecutions
+	
+	INSERT INTO #jobHistory
+	SELECT j.name AS job_name
+			, j.job_id
 			, jh.instance_id
 			, ISNULL(js.step_id, jh.step_id) AS step_id
 			, ISNULL(js.step_name, jh.step_name) AS step_name
@@ -146,21 +212,26 @@ SELECT j.job_id
 			, jh.run_duration
 			, ISNULL(js.subsystem, '-') AS subsystem
 			, ISNULL(js.command, '-') AS command
-			, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
-		-- SELECT *
-		FROM #jobs AS j
-			FULL OUTER JOIN msdb.dbo.sysjobsteps AS js
-				ON js.job_id = j.job_id
-			FULL OUTER JOIN msdb.dbo.sysjobhistory AS jh
-				ON jh.job_id = js.job_id
-					AND jh.step_id = js.step_id
+		FROM 
+		(
+		SELECT j.job_id, j.name, h.instance_id 
+			FROM #jobs AS j
+			OUTER APPLY (SELECT job_id, instance_id 
+							FROM #Step1 
+							WHERE job_id = j.job_id 
+								AND rowNumber = @includeLastNexecutions) AS h
+		) AS j
 
-		WHERE jh.step_id = 0 OR @includeSteps = 1
-	)
-	SELECT * 
-		INTO #jobHistory
-		FROM CTE
-	WHERE rowNumber <= @includeLastNexecutions
+		LEFT JOIN msdb.dbo.sysjobhistory AS jh
+			ON jh.job_id = j.job_id
+				AND jh.instance_id >= j.instance_id
+		LEFT JOIN msdb.dbo.sysjobsteps AS js
+			ON js.job_id = j.job_id
+				AND js.step_id = jh.step_id
+		ORDER BY job_id, instance_id DESC
+
+END
+
 
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
@@ -225,11 +296,11 @@ SELECT  @@SERVERNAME AS server_name
 				WHERE jsch.job_id = j.job_id
 				FOR XML PATH('')), 1, 7, '') AS schedules
 	FROM #jobs AS j
-		FULL OUTER JOIN #jobHistory AS jh
+		LEFT OUTER JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
 				AND (jh.step_id = 0 OR @includeSteps = 1)
 	WHERE ISNULL(jh.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
-	ORDER BY job_name, jh.rowNumber, CASE WHEN jh.step_id = 0 THEN POWER(2, 30) ELSE jh.step_id END DESC, jh.instance_id DESC
+	ORDER BY job_name, jh.instance_id DESC
 	
 DROP TABLE #jobHistory
 DROP TABLE #jobs
