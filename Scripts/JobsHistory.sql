@@ -115,10 +115,10 @@ GO
 -- END of Dependencies
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
-		, @includeSteps				BIT = 1
-		, @jobName					SYSNAME = 'Coeo - Import ConnectWise Data' 
-		, @commandText				SYSNAME --= '%fn_hadr%'
-		, @includeLastNexecutions	INT = 10
+		, @includeSteps				BIT = 0
+		, @jobName					SYSNAME 
+		, @commandText				SYSNAME 
+		, @includeLastNexecutions	INT = 1
 	
 SET NOCOUNT ON
 
