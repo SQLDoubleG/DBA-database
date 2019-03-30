@@ -50,6 +50,8 @@ GO
 --								- Removed comments
 --				28/03/2019 RAG 	- Split the logic if we want to get steps or not
 --								- Fixed bug when a job didn't execute all the steps
+--								- Added case statement for run_status
+--								- Change the order of the final output columns
 --
 -- =============================================
 -- =============================================
@@ -113,10 +115,10 @@ GO
 -- END of Dependencies
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
-		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME = 'Job Test 4'
-		, @commandText				SYSNAME = NULL
-		, @includeLastNexecutions	INT = 5
+		, @includeSteps				BIT = 1
+		, @jobName					SYSNAME = 'Coeo - Import ConnectWise Data' 
+		, @commandText				SYSNAME --= '%fn_hadr%'
+		, @includeLastNexecutions	INT = 10
 	
 SET NOCOUNT ON
 
@@ -187,8 +189,8 @@ IF @includeSteps = 0 BEGIN
 
 END 
 ELSE BEGIN
-	-- this is the job output if any history
 	
+	-- this is the first step for each run if any history
 	SELECT 	j.job_id
 		, jh.instance_id
 		, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
@@ -228,6 +230,7 @@ ELSE BEGIN
 		LEFT JOIN msdb.dbo.sysjobsteps AS js
 			ON js.job_id = j.job_id
 				AND js.step_id = jh.step_id
+		WHERE ISNULL(js.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
 		ORDER BY job_id, instance_id DESC
 
 END
@@ -240,8 +243,6 @@ SELECT  @@SERVERNAME AS server_name
 		, j.name AS job_name
 		, ISNULL(jh.step_id, '-')   AS step_id
 		, ISNULL(jh.step_name, '-')	AS step_name
-		, ISNULL(jh.subsystem, '-')   AS subsystem
-		, ISNULL(jh.command, '-')	AS command
 		, CASE WHEN jh.run_date <> 0 THEN 
 			(CONVERT(VARCHAR, CONVERT(DATE, 
 					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 1,4)		+ '-' +
@@ -251,7 +252,15 @@ SELECT  @@SERVERNAME AS server_name
 			ELSE '-'
 		END AS last_run
 		, [tempdb].[dbo].[formatMStimeToHR](jh.run_duration) AS last_run_duration
-		, STUFF((SELECT  ' [AND] ' + 
+		, CASE jh.run_status
+			WHEN 0 THEN 'Failed'
+			WHEN 1 THEN 'Succeeded'
+			WHEN 2 THEN 'Retry'
+			WHEN 3 THEN 'Canceled'
+			WHEN 4 THEN 'In Progress'
+			ELSE '-'
+		END AS run_status
+		, ISNULL(STUFF((SELECT ' [AND] ' + 
 					CASE 
 						WHEN s.freq_type = 1	THEN 'Once'					
 						WHEN s.freq_type = 4	THEN 'Every' + CASE WHEN s.freq_interval > 1 THEN ' ' ELSE '' END + ISNULL(NULLIF(CONVERT(VARCHAR, s.freq_interval),1),'') + ' Day' + CASE WHEN s.freq_interval > 1 THEN 's' ELSE '' END
@@ -294,12 +303,13 @@ SELECT  @@SERVERNAME AS server_name
 					INNER JOIN msdb.dbo.sysschedules AS s
 						ON s.schedule_id = jsch.schedule_id
 				WHERE jsch.job_id = j.job_id
-				FOR XML PATH('')), 1, 7, '') AS schedules
+				FOR XML PATH('')), 1, 7, ''), '-') AS schedules
+		, ISNULL(jh.subsystem, '-')   AS subsystem
+		, ISNULL(jh.command, '-')	AS command
 	FROM #jobs AS j
-		LEFT OUTER JOIN #jobHistory AS jh
+		INNER JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
-				AND (jh.step_id = 0 OR @includeSteps = 1)
-	WHERE ISNULL(jh.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
+	
 	ORDER BY job_name, jh.instance_id DESC
 	
 DROP TABLE #jobHistory
