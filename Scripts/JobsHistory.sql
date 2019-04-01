@@ -52,6 +52,7 @@ GO
 --								- Fixed bug when a job didn't execute all the steps
 --								- Added case statement for run_status
 --								- Change the order of the final output columns
+--				01/04/2019 RAG 	- Changes in how the schedules are displayed
 --
 -- =============================================
 -- =============================================
@@ -260,50 +261,57 @@ SELECT  @@SERVERNAME AS server_name
 			WHEN 4 THEN 'In Progress'
 			ELSE '-'
 		END AS run_status
-		, ISNULL(STUFF((SELECT ' [AND] ' + 
-					CASE 
-						WHEN s.freq_type = 1	THEN 'Once'					
-						WHEN s.freq_type = 4	THEN 'Every' + CASE WHEN s.freq_interval > 1 THEN ' ' ELSE '' END + ISNULL(NULLIF(CONVERT(VARCHAR, s.freq_interval),1),'') + ' Day' + CASE WHEN s.freq_interval > 1 THEN 's' ELSE '' END
-						WHEN s.freq_type = 8	THEN -- Weekly
-														ISNULL( STUFF( (SELECT N', ' + name 
-																			FROM #DaysOfWeekBitWise AS B 
-																			WHERE B.bitValue & s.freq_interval = B.bitValue 
-																				AND s.freq_type = 8
-																			FOR XML PATH('') ), 1, 2, '' ), 'None' )
-						WHEN s.freq_type = 16	THEN 'Every ' + CONVERT(VARCHAR, s.freq_interval) + ' of the month'
-						WHEN s.freq_type = 32	THEN 
-														CASE 
-															WHEN s.freq_relative_interval = 1	THEN 'First ' 
-															WHEN s.freq_relative_interval = 2	THEN 'Second ' 
-															WHEN s.freq_relative_interval = 4	THEN 'Third ' 
-															WHEN s.freq_relative_interval = 8	THEN 'Fourth ' 
-															WHEN s.freq_relative_interval = 16	THEN 'Last ' 
-														END
-														+ (SELECT Name FROM #monthlyRelative WHERE ID = s.freq_interval) + ' of the month'
-						WHEN s.freq_type = 64	THEN 'Starts when SQL Server Agent service starts'
-						WHEN s.freq_type = 128	THEN 'Runs when computer is idle'
-						ELSE 'None'
-					END 
-					+ 
-					CASE s.freq_subday_type 
-						WHEN 1 THEN ' @ ' + 
-							SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 1, 2) + ':' + 
-							SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 3, 2) + ':' + 
-							SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 5, 2) 
-						WHEN 2 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' second'	+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
-						WHEN 4 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' minute'	+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
-						WHEN 8 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' hour'		+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
-						ELSE ''
-					END + 
-					CASE s.freq_subday_type 
-						WHEN 1 THEN ''
-						ELSE ', From ' + [tempdb].[dbo].[formatMStimeToHR](s.active_start_time) + ' till ' + [tempdb].[dbo].[formatMStimeToHR](s.active_end_time)			
-					END
-				FROM msdb.dbo.sysjobschedules AS jsch
-					INNER JOIN msdb.dbo.sysschedules AS s
-						ON s.schedule_id = jsch.schedule_id
-				WHERE jsch.job_id = j.job_id
-				FOR XML PATH('')), 1, 7, ''), '-') AS schedules
+		, ISNULL(
+			STUFF(
+				(SELECT ' [AND] ' + 
+						CASE 
+							WHEN s.freq_type = 1	THEN 'Once on '	
+									+ CONVERT(VARCHAR(20), CONVERT(DATE, CONVERT(VARCHAR, s.active_start_date)), 103) 
+									+ ' @ ' + [tempdb].[dbo].[formatMStimeToHR](s.active_start_time)
+							WHEN s.freq_type = 4	THEN 'Every' + CASE WHEN s.freq_interval > 1 THEN ' ' ELSE '' END + ISNULL(NULLIF(CONVERT(VARCHAR, s.freq_interval),1),'') + ' Day' + CASE WHEN s.freq_interval > 1 THEN 's' ELSE '' END
+							WHEN s.freq_type = 8	THEN -- Weekly
+															ISNULL( STUFF( (SELECT N', ' + name 
+																				FROM #DaysOfWeekBitWise AS B 
+																				WHERE B.bitValue & s.freq_interval = B.bitValue 
+																					AND s.freq_type = 8
+																				FOR XML PATH('') ), 1, 2, '' ), 'None' )
+							WHEN s.freq_type = 16	THEN 'Every ' + CONVERT(VARCHAR, s.freq_interval) + ' of the month'
+							WHEN s.freq_type = 32	THEN 
+															CASE 
+																WHEN s.freq_relative_interval = 1	THEN 'First ' 
+																WHEN s.freq_relative_interval = 2	THEN 'Second ' 
+																WHEN s.freq_relative_interval = 4	THEN 'Third ' 
+																WHEN s.freq_relative_interval = 8	THEN 'Fourth ' 
+																WHEN s.freq_relative_interval = 16	THEN 'Last ' 
+															END
+															+ (SELECT Name FROM #monthlyRelative WHERE ID = s.freq_interval) + ' of the month'
+							WHEN s.freq_type = 64	THEN 'Starts when SQL Server Agent service starts'
+							WHEN s.freq_type = 128	THEN 'Runs when computer is idle'
+							ELSE 'None'
+						END 
+						+ 
+						CASE s.freq_subday_type 
+							WHEN 1 THEN ' @ ' + 
+								SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 1, 2) + ':' + 
+								SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 3, 2) + ':' + 
+								SUBSTRING( RIGHT('000000' + CONVERT(VARCHAR(6),s.active_start_time), 6), 5, 2) 
+							WHEN 2 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' second'	+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
+							WHEN 4 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' minute'	+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
+							WHEN 8 THEN '. Every ' + CONVERT(VARCHAR,s.freq_subday_interval) + ' hour'		+ CASE WHEN s.freq_subday_interval > 1 THEN 's' ELSE '' END
+							ELSE ''
+						END + 
+						CASE WHEN s.freq_subday_type NOT IN (4, 8) THEN ''
+							--WHEN 4 THEN ''
+							ELSE ', From ' + [tempdb].[dbo].[formatMStimeToHR](s.active_start_time) + ' till ' + [tempdb].[dbo].[formatMStimeToHR](s.active_end_time)			
+						END + 
+						CASE WHEN s.enabled = 1 THEN ''
+							ELSE + ' (Disabled)'
+						END
+					FROM msdb.dbo.sysjobschedules AS jsch
+						INNER JOIN msdb.dbo.sysschedules AS s
+							ON s.schedule_id = jsch.schedule_id
+					WHERE jsch.job_id = j.job_id
+					FOR XML PATH('')), 1, 7, ''), '-') AS schedules
 		, ISNULL(jh.subsystem, '-')   AS subsystem
 		, ISNULL(jh.command, '-')	AS command
 	FROM #jobs AS j
