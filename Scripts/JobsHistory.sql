@@ -167,7 +167,7 @@ IF @includeSteps = 0 BEGIN
 			, jh.run_duration
 			, '-' AS subsystem
 			, '-' AS command
-			, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
+			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
 		FROM #jobs AS j
 			LEFT JOIN msdb.dbo.sysjobhistory AS jh
 				ON jh.job_id = j.job_id
