@@ -53,6 +53,7 @@ GO
 --								- Added case statement for run_status
 --								- Change the order of the final output columns
 --				01/04/2019 RAG 	- Changes in how the schedules are displayed
+--				23/05/2019 RAG 	- Added scape character for the job names
 --
 -- =============================================
 -- =============================================
@@ -150,7 +151,7 @@ SELECT j.job_id
 	INTO #jobs
 	FROM msdb.dbo.sysjobs AS j
 	WHERE (( @onlyActiveJobs = 1 AND j.enabled = 1 ) OR @onlyActiveJobs = 0)
-		AND j.name LIKE ISNULL(@jobName, j.name)
+		AND j.name LIKE ISNULL(NULL, REPLACE(REPLACE(j.name, '[', '\['), ']', '\]')) ESCAPE '\'
 
 IF @includeSteps = 0 BEGIN
 
