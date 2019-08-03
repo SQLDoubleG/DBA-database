@@ -125,7 +125,7 @@ GO
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
 		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME = 'New Job _'
+		, @jobName					SYSNAME 
 		, @commandText				SYSNAME 
 		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
