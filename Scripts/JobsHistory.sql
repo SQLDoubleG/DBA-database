@@ -58,6 +58,9 @@ GO
 --								- Changed ISNULL() for @param IS NULL OR 
 --								- Added @errMessage filter 
 --				03/08/2019 RAG 	- Changed the order of the LEFT JOIN to get job steps when there is no history
+--								- Added columns [start_step_id], [on_success_action] and [on_failure_action] to the final output
+--								- Always insert Step 0 (Job Outcome) and the rest only if @includeSteps = 1
+--									but only display it when the job has run at least once
 --
 -- =============================================
 -- =============================================
@@ -121,8 +124,8 @@ GO
 -- END of Dependencies
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
-		, @includeSteps				BIT = 1
-		, @jobName					SYSNAME = 'New Job 7'
+		, @includeSteps				BIT = 0
+		, @jobName					SYSNAME = 'New Job _'
 		, @commandText				SYSNAME 
 		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
@@ -139,29 +142,34 @@ IF OBJECT_ID('tempdb..#jobs')			IS NOT NULL DROP TABLE #jobs
 IF OBJECT_ID('tempdb..#Step1')			IS NOT NULL DROP TABLE #Step1
 
 CREATE TABLE #jobHistory(
-	job_name		SYSNAME
-	, job_id		UNIQUEIDENTIFIER	
-	, instance_id	INT					NULL
-	, step_id		INT					NULL
-	, step_name		SYSNAME				NULL
-	, run_date		INT					NULL
-	, run_status	INT					NULL
-	, run_time		INT					NULL
-	, run_duration	INT					NULL
-	, subsystem		NVARCHAR(40)		NULL
-	, command		NVARCHAR(MAX)		NULL
-	, message		NVARCHAR(MAX)		NULL)
+	job_name				SYSNAME
+	, job_id				UNIQUEIDENTIFIER	
+	, instance_id			INT					NULL
+	, step_id				INT					NULL
+	, step_name				SYSNAME				NULL
+	, run_date				INT					NULL
+	, run_status			INT					NULL
+	, run_time				INT					NULL
+	, run_duration			INT					NULL
+	, on_success_action		TINYINT				NULL
+	, on_success_step_id	INT					NULL
+	, on_fail_action		TINYINT				NULL
+	, on_fail_step_id		INT					NULL
+	, subsystem				NVARCHAR(40)		NULL
+	, command				NVARCHAR(MAX)		NULL
+	, message				NVARCHAR(MAX)		NULL)
 
 --Get all jobs we're interested
 SELECT j.job_id
 		, j.name 
 		, j.enabled
+		, j.start_step_id
 	INTO #jobs
 	FROM msdb.dbo.sysjobs AS j
 	WHERE (( @onlyActiveJobs = 1 AND j.enabled = 1 ) OR @onlyActiveJobs = 0)
 		AND j.name LIKE ISNULL(@jobName, REPLACE(REPLACE(j.name, '[', '`['), ']', '`]')) ESCAPE '`'
 	ORDER BY name
-IF @includeSteps = 0 BEGIN
+
 
 	-- this is the job output if any history
 	;WITH cte AS(
@@ -174,12 +182,16 @@ IF @includeSteps = 0 BEGIN
 			, jh.run_status
 			, jh.run_time
 			, jh.run_duration
+			, '-' AS on_success_action	
+			, '-' AS on_success_step_id
+			, '-' AS on_fail_action	
+			, '-' AS on_fail_step_id	
 			, '-' AS subsystem
 			, '-' AS command
 			, '-' AS message
 			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
 		FROM #jobs AS j
-			LEFT JOIN msdb.dbo.sysjobhistory AS jh
+			INNER JOIN msdb.dbo.sysjobhistory AS jh
 				ON jh.job_id = j.job_id
 					AND jh.step_id = 0
 	)
@@ -193,14 +205,17 @@ IF @includeSteps = 0 BEGIN
 				, run_status
 				, run_time
 				, run_duration
+				, on_success_action	
+				, on_success_step_id
+				, on_fail_action	
+				, on_fail_step_id	
 				, subsystem
 				, command 
 				, message
 			FROM cte
 			WHERE rowNumber <= @includeLastNexecutions 
 
-END 
-ELSE BEGIN
+IF @includeSteps = 1 BEGIN
 	
 	-- this is the first step for each run if any history
 	SELECT 	j.job_id
@@ -224,6 +239,10 @@ ELSE BEGIN
 			, jh.run_status
 			, jh.run_time
 			, jh.run_duration
+			, js.on_success_action	
+			, js.on_success_step_id
+			, js.on_fail_action	
+			, js.on_fail_step_id	
 			, ISNULL(js.subsystem, '-') AS subsystem
 			, ISNULL(js.command, '-') AS command
 			, ISNULL(jh.message, '-') AS message
@@ -245,7 +264,7 @@ ELSE BEGIN
 				AND jh.instance_id >= j.instance_id		
 		WHERE (@commandText IS NULL OR js.command LIKE @commandText) 
 			AND (@errMessage IS NULL OR jh.message LIKE @errMessage)
-		ORDER BY job_id, instance_id DESC
+		ORDER BY j.job_id, jh.instance_id DESC
 
 END
 
@@ -254,7 +273,9 @@ SELECT  @@SERVERNAME AS server_name
 		, j.job_id
 		, CONVERT(VARBINARY(85), j.job_id) AS job_id_binary
 		, j.name AS job_name
-		, ISNULL(jh.step_id, '-')   AS step_id
+		, CASE WHEN j.enabled = 1 THEN 'Yes' ELSE 'No' END AS [enabled]
+		, j.start_step_id
+		, ISNULL(CONVERT(VARCHAR(30), jh.step_id), '-')   AS step_id
 		, ISNULL(jh.step_name, '-')	AS step_name
 		, CASE WHEN jh.run_date <> 0 THEN 
 			(CONVERT(VARCHAR, CONVERT(DATE, 
@@ -327,10 +348,26 @@ SELECT  @@SERVERNAME AS server_name
 		, ISNULL(jh.subsystem, '-')   AS subsystem
 		, ISNULL(jh.command, '-')	AS command
 		, ISNULL(jh.message, '-')	AS message
+		, CASE jh.on_success_action	
+			WHEN 1 THEN 'Quit the job reporting success'
+			WHEN 2 THEN 'Quit the job reporting failure'
+			WHEN 3 THEN 'Go to the next step'
+			WHEN 4 THEN 'Go to step ' + CONVERT(VARCHAR(30), jh.on_success_step_id)
+			ELSE '-'
+		END AS on_success_action	
+		--, jh.on_success_step_id
+		, CASE jh.on_fail_action	
+			WHEN 1 THEN 'Quit the job reporting success'
+			WHEN 2 THEN 'Quit the job reporting failure'
+			WHEN 3 THEN 'Go to the next step'
+			WHEN 4 THEN 'Go to step ' + CONVERT(VARCHAR(30), jh.on_success_step_id)
+			ELSE 'dunno'
+		END AS on_fail_action
+		--, jh.on_fail_step_id	 
 	FROM #jobs AS j
 		LEFT JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
-	ORDER BY job_name, jh.instance_id DESC
+	ORDER BY job_name, jh.instance_id DESC, step_id DESC
 	
 DROP TABLE #jobHistory
 DROP TABLE #jobs
