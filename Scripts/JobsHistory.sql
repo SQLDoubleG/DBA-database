@@ -54,6 +54,10 @@ GO
 --								- Change the order of the final output columns
 --				01/04/2019 RAG 	- Changes in how the schedules are displayed
 --				23/05/2019 RAG 	- Added scape character for the job names
+--				02/07/2019 RAG 	- Changed the scape character from \ to ` as \ is more commonly used in job names
+--								- Changed ISNULL() for @param IS NULL OR 
+--								- Added @errMessage filter 
+--				03/08/2019 RAG 	- Changed the order of the LEFT JOIN to get job steps when there is no history
 --
 -- =============================================
 -- =============================================
@@ -117,14 +121,16 @@ GO
 -- END of Dependencies
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
-		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME 
+		, @includeSteps				BIT = 1
+		, @jobName					SYSNAME = 'New Job 7'
 		, @commandText				SYSNAME 
+		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
 	
 SET NOCOUNT ON
 
 IF ISNULL(@commandText, '') <> '' SET @includeSteps = 1
+IF ISNULL(@errMessage, '') <> '' SET @includeSteps = 1
 
 SET @includeLastNexecutions = ISNULL(@includeLastNexecutions, 1)
 
@@ -143,16 +149,18 @@ CREATE TABLE #jobHistory(
 	, run_time		INT					NULL
 	, run_duration	INT					NULL
 	, subsystem		NVARCHAR(40)		NULL
-	, command		NVARCHAR(MAX)		NULL)
+	, command		NVARCHAR(MAX)		NULL
+	, message		NVARCHAR(MAX)		NULL)
 
 --Get all jobs we're interested
 SELECT j.job_id
 		, j.name 
+		, j.enabled
 	INTO #jobs
 	FROM msdb.dbo.sysjobs AS j
 	WHERE (( @onlyActiveJobs = 1 AND j.enabled = 1 ) OR @onlyActiveJobs = 0)
-		AND j.name LIKE ISNULL(NULL, REPLACE(REPLACE(j.name, '[', '\['), ']', '\]')) ESCAPE '\'
-
+		AND j.name LIKE ISNULL(@jobName, REPLACE(REPLACE(j.name, '[', '`['), ']', '`]')) ESCAPE '`'
+	ORDER BY name
 IF @includeSteps = 0 BEGIN
 
 	-- this is the job output if any history
@@ -168,6 +176,7 @@ IF @includeSteps = 0 BEGIN
 			, jh.run_duration
 			, '-' AS subsystem
 			, '-' AS command
+			, '-' AS message
 			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
 		FROM #jobs AS j
 			LEFT JOIN msdb.dbo.sysjobhistory AS jh
@@ -186,6 +195,7 @@ IF @includeSteps = 0 BEGIN
 				, run_duration
 				, subsystem
 				, command 
+				, message
 			FROM cte
 			WHERE rowNumber <= @includeLastNexecutions 
 
@@ -216,6 +226,7 @@ ELSE BEGIN
 			, jh.run_duration
 			, ISNULL(js.subsystem, '-') AS subsystem
 			, ISNULL(js.command, '-') AS command
+			, ISNULL(jh.message, '-') AS message
 		FROM 
 		(
 		SELECT j.job_id, j.name, h.instance_id 
@@ -226,17 +237,17 @@ ELSE BEGIN
 								AND rowNumber = @includeLastNexecutions) AS h
 		) AS j
 
-		LEFT JOIN msdb.dbo.sysjobhistory AS jh
-			ON jh.job_id = j.job_id
-				AND jh.instance_id >= j.instance_id
 		LEFT JOIN msdb.dbo.sysjobsteps AS js
 			ON js.job_id = j.job_id
-				AND js.step_id = jh.step_id
-		WHERE ISNULL(js.command, '') LIKE '%' + ISNULL(@commandText, '') + '%'
+		LEFT JOIN msdb.dbo.sysjobhistory AS jh
+			ON jh.job_id = j.job_id
+				AND jh.step_id = js.step_id
+				AND jh.instance_id >= j.instance_id		
+		WHERE (@commandText IS NULL OR js.command LIKE @commandText) 
+			AND (@errMessage IS NULL OR jh.message LIKE @errMessage)
 		ORDER BY job_id, instance_id DESC
 
 END
-
 
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
@@ -315,10 +326,10 @@ SELECT  @@SERVERNAME AS server_name
 					FOR XML PATH('')), 1, 7, ''), '-') AS schedules
 		, ISNULL(jh.subsystem, '-')   AS subsystem
 		, ISNULL(jh.command, '-')	AS command
+		, ISNULL(jh.message, '-')	AS message
 	FROM #jobs AS j
-		INNER JOIN #jobHistory AS jh
+		LEFT JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
-	
 	ORDER BY job_name, jh.instance_id DESC
 	
 DROP TABLE #jobHistory
