@@ -61,6 +61,8 @@ GO
 --								- Added columns [start_step_id], [on_success_action] and [on_failure_action] to the final output
 --								- Always insert Step 0 (Job Outcome) and the rest only if @includeSteps = 1
 --									but only display it when the job has run at least once
+--				22/10/2019 RAG 	- Added database_name for each step
+--				08/12/2019 RAG 	- Fixed a bug that didn't return correct step information which made sorting incorrect
 --
 -- =============================================
 -- =============================================
@@ -125,8 +127,8 @@ GO
 -- =============================================
 DECLARE	@onlyActiveJobs				BIT = 0
 		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME 
-		, @commandText				SYSNAME 
+		, @jobName					SYSNAME = NULL
+		, @commandText				SYSNAME = NULL
 		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
 	
@@ -147,6 +149,7 @@ CREATE TABLE #jobHistory(
 	, instance_id			INT					NULL
 	, step_id				INT					NULL
 	, step_name				SYSNAME				NULL
+	, database_name			SYSNAME				NULL
 	, run_date				INT					NULL
 	, run_status			INT					NULL
 	, run_time				INT					NULL
@@ -168,7 +171,7 @@ SELECT j.job_id
 	FROM msdb.dbo.sysjobs AS j
 	WHERE (( @onlyActiveJobs = 1 AND j.enabled = 1 ) OR @onlyActiveJobs = 0)
 		AND j.name LIKE ISNULL(@jobName, REPLACE(REPLACE(j.name, '[', '`['), ']', '`]')) ESCAPE '`'
-	ORDER BY name
+	ORDER BY j.name
 
 
 	-- this is the job output if any history
@@ -178,6 +181,7 @@ SELECT j.job_id
 			, jh.instance_id
 			, jh.step_id
 			, jh.step_name
+			, NULL AS database_name
 			, jh.run_date
 			, jh.run_status
 			, jh.run_time
@@ -189,38 +193,39 @@ SELECT j.job_id
 			, '-' AS subsystem
 			, '-' AS command
 			, '-' AS message
-			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
+			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, jh.run_time DESC) AS rowNumber		
 		FROM #jobs AS j
 			INNER JOIN msdb.dbo.sysjobhistory AS jh
 				ON jh.job_id = j.job_id
 					AND jh.step_id = 0
 	)
 	INSERT INTO #jobHistory
-		SELECT job_name
-				, job_id
-				, instance_id
-				, step_id
-				, step_name
-				, run_date
-				, run_status
-				, run_time
-				, run_duration
-				, on_success_action	
-				, on_success_step_id
-				, on_fail_action	
-				, on_fail_step_id	
-				, subsystem
-				, command 
-				, message
+		SELECT cte.job_name
+				, cte.job_id
+				, cte.instance_id
+				, cte.step_id
+				, cte.step_name
+				, cte.database_name
+				, cte.run_date
+				, cte.run_status
+				, cte.run_time
+				, cte.run_duration
+				, cte.on_success_action	
+				, cte.on_success_step_id
+				, cte.on_fail_action	
+				, cte.on_fail_step_id	
+				, cte.subsystem
+				, cte.command 
+				, cte.message
 			FROM cte
-			WHERE rowNumber <= @includeLastNexecutions 
+			WHERE cte.rowNumber <= @includeLastNexecutions 
 
 IF @includeSteps = 1 BEGIN
 	
 	-- this is the first step for each run if any history
 	SELECT 	j.job_id
 		, jh.instance_id
-		, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, run_time DESC) AS rowNumber		
+		, ROW_NUMBER() OVER (PARTITION BY jh.job_id, jh.step_id ORDER BY jh.run_date DESC, jh.run_time DESC) AS rowNumber		
 	INTO #Step1
 	FROM #jobs AS j
 		LEFT JOIN msdb.dbo.sysjobhistory AS jh
@@ -235,6 +240,7 @@ IF @includeSteps = 1 BEGIN
 			, jh.instance_id
 			, ISNULL(js.step_id, jh.step_id) AS step_id
 			, ISNULL(js.step_name, jh.step_name) AS step_name
+			, js.database_name
 			, jh.run_date
 			, jh.run_status
 			, jh.run_time
@@ -253,15 +259,17 @@ IF @includeSteps = 1 BEGIN
 			OUTER APPLY (SELECT job_id, instance_id 
 							FROM #Step1 
 							WHERE job_id = j.job_id 
-								AND rowNumber = @includeLastNexecutions) AS h
+								AND rowNumber <= @includeLastNexecutions) AS h
 		) AS j
 
-		LEFT JOIN msdb.dbo.sysjobsteps AS js
+		INNER  JOIN msdb.dbo.sysjobsteps AS js
 			ON js.job_id = j.job_id
-		LEFT JOIN msdb.dbo.sysjobhistory AS jh
-			ON jh.job_id = j.job_id
-				AND jh.step_id = js.step_id
-				AND jh.instance_id >= j.instance_id		
+		CROSS APPLY (SELECT TOP 1 jh.*
+						FROM msdb.dbo.sysjobhistory AS jh
+							WHERE jh.job_id = j.job_id
+								AND jh.step_id = js.step_id
+								AND jh.instance_id >= j.instance_id
+					ORDER BY jh.instance_id) AS jh
 		WHERE (@commandText IS NULL OR js.command LIKE @commandText) 
 			AND (@errMessage IS NULL OR jh.message LIKE @errMessage)
 		ORDER BY j.job_id, jh.instance_id DESC
@@ -270,6 +278,7 @@ END
 
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
+		, jh.instance_id
 		, j.job_id
 		, CONVERT(VARBINARY(85), j.job_id) AS job_id_binary
 		, j.name AS job_name
@@ -277,6 +286,7 @@ SELECT  @@SERVERNAME AS server_name
 		, j.start_step_id
 		, ISNULL(CONVERT(VARCHAR(30), jh.step_id), '-')   AS step_id
 		, ISNULL(jh.step_name, '-')	AS step_name
+		, ISNULL(jh.database_name, '-')	AS database_name
 		, CASE WHEN jh.run_date <> 0 THEN 
 			(CONVERT(VARCHAR, CONVERT(DATE, 
 					SUBSTRING(CONVERT(VARCHAR(8),jh.run_date), 1,4)		+ '-' +
@@ -303,7 +313,7 @@ SELECT  @@SERVERNAME AS server_name
 									+ ' @ ' + [tempdb].[dbo].[formatMStimeToHR](s.active_start_time)
 							WHEN s.freq_type = 4	THEN 'Every' + CASE WHEN s.freq_interval > 1 THEN ' ' ELSE '' END + ISNULL(NULLIF(CONVERT(VARCHAR, s.freq_interval),1),'') + ' Day' + CASE WHEN s.freq_interval > 1 THEN 's' ELSE '' END
 							WHEN s.freq_type = 8	THEN -- Weekly
-															ISNULL( STUFF( (SELECT N', ' + name 
+															ISNULL( STUFF( (SELECT N', ' + B.name 
 																				FROM #DaysOfWeekBitWise AS B 
 																				WHERE B.bitValue & s.freq_interval = B.bitValue 
 																					AND s.freq_type = 8
@@ -361,7 +371,7 @@ SELECT  @@SERVERNAME AS server_name
 			WHEN 2 THEN 'Quit the job reporting failure'
 			WHEN 3 THEN 'Go to the next step'
 			WHEN 4 THEN 'Go to step ' + CONVERT(VARCHAR(30), jh.on_success_step_id)
-			ELSE 'dunno'
+			ELSE '-'
 		END AS on_fail_action
 		--, jh.on_fail_step_id	 
 	FROM #jobs AS j
