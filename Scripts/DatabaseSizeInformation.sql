@@ -30,6 +30,7 @@ GO
 --									- Removed all information related to files and filegroups as that is not diplayed anymore
 --									- Added FreeMB information to [DataSizeMB] column, calculation based on allocation units
 --				2019-03-20 RAG - Added support for not ONLINE databases by looking at sys.master_files instead
+--				2020-04-08 RAG - Added total size for each of the columns
 -- =============================================
 DECLARE 
 	@dbname				SYSNAME 
@@ -104,7 +105,7 @@ DECLARE
             , ISNULL([FILESTREAM], 0) AS FilestreamSizeMB
             , ISNULL([FULLTEXT], 0) AS FulltextSizeMB
             , [ROWS] + [LOG] + ISNULL([FILESTREAM], 0) + ISNULL([FULLTEXT], 0) AS TotalSizeMB
-            , CONVERT(DECIMAL(10,2), ([ROWS] + [LOG] + ISNULL([FILESTREAM], 0) + ISNULL([FULLTEXT], 0)) / 1024.) AS TotalSizeGB
+
         FROM ( 
             SELECT [db_name], type_desc, sizeMB
                 FROM @dbfiles 
@@ -114,13 +115,27 @@ DECLARE
             FOR type_desc IN ([ROWS],[LOG],[FILESTREAM],[FULLTEXT],[ALLOC])
         ) AS p
     )
-    SELECT  [db_name] 
-			, [DataSizeMB]
-			, [FreeMB]
-			, LogSizeMB
-			, FilestreamSizeMB
-			, FulltextSizeMB
-			, TotalSizeMB
-			, TotalSizeGB
+	SELECT  ISNULL([db_name], '***Total***') AS [db_name]
+			/*
+			, SUM([DataSizeMB]) AS [DataSizeMB]
+			, SUM([DataSizeMB]-[FreeMB]) AS [UsedMB]
+			, SUM([FreeMB]) AS [FreeMB]
+			, SUM(LogSizeMB) AS LogSizeMB
+			, SUM(FilestreamSizeMB) AS FilestreamSizeMB
+			, SUM(FulltextSizeMB) AS FulltextSizeMB
+			, SUM(TotalSizeMB) AS TotalSizeMB
+			--*/
+			--/*
+			, CONVERT(DECIMAL(10,2), SUM([DataSizeMB])/1024.) AS [DataSizeGB]
+			, CONVERT(DECIMAL(10,2), SUM(([DataSizeMB]-[FreeMB]))/1024.) AS [UsedGB]
+			, CONVERT(DECIMAL(10,2), SUM([FreeMB])/1024.) AS [FreeGB]
+			, CONVERT(DECIMAL(10,2), SUM(LogSizeMB)/1024.) AS LogSizeGB
+			, CONVERT(DECIMAL(10,2), SUM(FilestreamSizeMB)/1024.) AS FilestreamSizeGB
+			, CONVERT(DECIMAL(10,2), SUM(FulltextSizeMB)/1024.) AS FulltextSizeGB
+			, CONVERT(DECIMAL(10,2), SUM(TotalSizeMB)/1024.) AS TotalSizeGB
+			--*/
 		FROM all_dbs
+		GROUP BY [db_name] 
+		WITH ROLLUP
+		ORDER BY CASE WHEN [db_name] <> '***Total***' THEN 1 ELSE 2 END ASC
 GO
