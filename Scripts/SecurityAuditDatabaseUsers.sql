@@ -30,7 +30,8 @@ GO
 --                         16/03/2016 SZO - Added column granularity to [permission_list] column
 --                         24/01/2018 RAG - Added column [included_users] which will display all users that are member of a database role
 --											Removed condition to exclude system database roles
---                         05/11/2018 RAG - Added column drop temp table #databases
+--                         12/03/2020 RAG - Added column [CREATE_DB_ROLE] 
+--                         11/08/2020 RAG - Added parameter @onlyOrphanUsers to identify orphan users
 --
 -- Params are concatenated to the @sql string to avoid problems in databases with different collation than [DBA]
 --
@@ -52,9 +53,10 @@ GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
-DECLARE	@dbname				sysname = NULL
+DECLARE	@dbname				sysname --= 'msdb'
 	  , @db_principal_name	sysname = NULL
 	  , @srv_principal_name sysname = NULL
+	  , @onlyOrphanUsers	BIT		= 1
 	  , @includeSystemDBs	BIT		= 1
 
 SET NOCOUNT ON;
@@ -72,7 +74,8 @@ CREATE TABLE #all_db_users (
 	, database_roles		NVARCHAR(512) NULL
 	, included_users		NVARCHAR(4000) NULL
 	, DROP_USER_SCHEMA		NVARCHAR(256)
-	, DROP_DB_ROLE			NVARCHAR(1000)
+	, CREATE_DB_ROLE		NVARCHAR(4000)
+	, DROP_DB_ROLE			NVARCHAR(4000)
 	, DROP_DB_USER			NVARCHAR(256)
 );
 
@@ -127,6 +130,7 @@ WHILE @countDBs <= @numDBs BEGIN
                     , database_roles
 					, included_users
                     , DROP_USER_SCHEMA
+                    , CREATE_DB_ROLE
                     , DROP_DB_ROLE
                     , DROP_DB_USER
             )
@@ -157,6 +161,17 @@ WHILE @countDBs <= @numDBs BEGIN
 									''ALTER USER '' + QUOTENAME(dbp.name) + '' WITH DEFAULT_SCHEMA = [dbo]'' + CHAR(10) + ''GO'' 
 									ELSE '''' 
 								END AS DROP_USER_SCHEMA
+						, (SELECT ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
+							''CREATE ROLE '' + QUOTENAME(dbr.name) + CHAR(10) + 
+											CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) >= 11 
+													THEN ''ALTER ROLE '' +  QUOTENAME(dbr.name) + '' ADD MEMBER '' + QUOTENAME(dbp.name)
+													ELSE '' EXECUTE sp_droprolemember '' + QUOTENAME(dbr.name) + '', '' + QUOTENAME(dbp.name) 
+											END + CHAR(10) + ''GO'' + CHAR(10) 
+									FROM sys.database_principals dbr 
+									LEFT JOIN sys.database_role_members AS drm
+											ON drm.member_principal_id = dbp.principal_id
+									WHERE dbr.principal_id = drm.role_principal_id
+									FOR XML PATH('''')) AS CREATE_DB_ROLE
 						, (SELECT ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
 											CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) >= 11 
 													THEN ''ALTER ROLE '' +  QUOTENAME(dbr.name) + '' DROP MEMBER '' + QUOTENAME(dbp.name)
@@ -351,13 +366,18 @@ SELECT DB_NAME (dbp.database_id)							 AS database_name
 	, dbp.database_roles
 	, dbp.included_users
 	, dbp.DROP_USER_SCHEMA
+	, dbp.CREATE_DB_ROLE
 	, dbp.DROP_DB_ROLE
 	, dbp.DROP_DB_USER
 	FROM #all_db_users					 AS dbp
 			LEFT JOIN sys.server_principals AS sp
 				ON sp.sid = dbp.principal_sid
-	WHERE ISNULL (sp.name, '') LIKE COALESCE (
-										@srv_principal_name, sp.name, '')
+	WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
+		AND (@onlyOrphanUsers = 0 OR
+			(dbp.principal_type_desc = 'SQL_USER' 
+				AND sp.name IS NULL 
+				AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
+			)
 	ORDER BY database_name ASC, dbp.principal_name ASC;
 
 SELECT DB_NAME (dbp.database_id) AS database_name
@@ -373,8 +393,12 @@ SELECT DB_NAME (dbp.database_id) AS database_name
 	FROM #all_db_permissions			 AS dbp
 			LEFT JOIN sys.server_principals AS sp
 				ON sp.sid = dbp.principal_sid
-	WHERE ISNULL (sp.name, '') LIKE COALESCE (
-										@srv_principal_name, sp.name, '')
+	WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
+		AND (@onlyOrphanUsers = 0 OR
+			(dbp.principal_type_desc = 'SQL_USER' 
+				AND sp.name IS NULL 
+				AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
+			)
 	ORDER BY database_name, dbp.principal_name, dbp.class_desc, dbp.object_name;
 
 DROP TABLE #databases;
