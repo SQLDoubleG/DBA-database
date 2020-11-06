@@ -29,6 +29,7 @@ GO
 -- Assupmtions:	
 --
 -- Change Log:	07/05/2014 RAG Created
+-- 				07/09/2020 RAG Changed Included columns order to be alphabetical
 --				
 -- =============================================
 DECLARE @dbname			SYSNAME		= NULL
@@ -329,7 +330,7 @@ SELECT mix.database_id
 							FROM #r AS r
 							WHERE r.index_handle = mix.index_handle
 								AND r.column_usage = 'INCLUDE'
-							ORDER BY All_Density ASC
+							ORDER BY column_name ASC
 							FOR XML PATH('')), 1, 2, '') + ')'), '') 
 			+ 
 			CHAR(10) + CHAR(9) + 
