@@ -44,6 +44,7 @@ GO
 --									 regardless have been ever backed up or not.
 --								- Added is_preffered replica using [fn_hadr_backup_is_preferred_replica]
 --				11/03/2020 RAG	- Added MOVE xx TO xx and parameters @newDataPath and @newLogPath for easy restores
+--				11/06/2020 RAG	- Added RESTORE FILESLISTONLY column and REPLACE option
 -- =============================================
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependant function
@@ -174,24 +175,27 @@ SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
 		, d.create_date
 		, d.state_desc
 		, d.recovery_model_desc
-		, CONVERT(DATETIME2(0), cte.backup_finish_date) AS backup_finish_date
-		, STUFF((SELECT ', ' + mf.physical_device_name FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) AS physical_device_name
-		, CONVERT(INT, cte.backup_size / 1024 /1024 ) AS size_MB
-		, CONVERT(INT, cte.compressed_backup_size / 1024 /1024 ) AS compressed_size_MB
-		, CONVERT(DECIMAL(10,2), cte.backup_size / 1024. /1024 /1024 ) AS size_GB
-		, CONVERT(DECIMAL(10,2), cte.compressed_backup_size / 1024. / 1024 /1024 ) AS compressed_size_GB
-		, CONVERT(DECIMAL(10,2), 100 - ( ( cte.compressed_backup_size * 100 ) / cte.backup_size ) ) AS compression_ratio
-		, CONVERT(DECIMAL(10,2), (cte.compressed_backup_size / 1024. / 1024) / (DATEDIFF(SECOND, cte.backup_start_date, cte.backup_finish_date ) + 1) ) AS MB_per_sec
-		, tempdb.dbo.formatSecondsToHR( DATEDIFF(SECOND,cte.backup_start_date, cte.backup_finish_date) ) AS duration
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(DATETIME2(0), cte.backup_finish_date)), '-') AS backup_finish_date
+		, ISNULL(STUFF((SELECT ', ' + mf.physical_device_name 
+							FROM msdb.dbo.backupmediafamily AS mf 
+							WHERE mf.media_set_id = cte.media_set_id 
+							FOR XML PATH('')), 1,2,'' ), '-') AS physical_device_name
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(INT, cte.backup_size / 1024 /1024 )), '-') AS size_MB
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(INT, cte.compressed_backup_size / 1024 /1024 )), '-') AS compressed_size_MB
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(DECIMAL(10,2), cte.backup_size / 1024. /1024 /1024 )), '-') AS size_GB
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(DECIMAL(10,2), cte.compressed_backup_size / 1024. / 1024 /1024 )), '-') AS compressed_size_GB
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(DECIMAL(10,2), 100 - ( ( cte.compressed_backup_size * 100 ) / cte.backup_size ) )), '-') AS compression_ratio
+		, ISNULL(CONVERT(VARCHAR(100), CONVERT(DECIMAL(10,2), (cte.compressed_backup_size / 1024. / 1024) / (DATEDIFF(SECOND, cte.backup_start_date, cte.backup_finish_date ) + 1) )), '-') AS MB_per_sec
+		, ISNULL(CONVERT(VARCHAR(100), tempdb.dbo.formatSecondsToHR( DATEDIFF(SECOND,cte.backup_start_date, cte.backup_finish_date) )), '-') AS duration
 		, CASE WHEN cte.has_backup_checksums = 1 THEN 'Yes' ELSE 'No' END AS has_backup_checksums
-		, 'RESTORE FILELISTONLY FROM ' + 
+		, ISNULL('RESTORE FILELISTONLY FROM ' + 
 			STUFF( (SELECT ', DISK = ''' + mf.physical_device_name + '''' + CHAR(10) + CHAR(9)
-						FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) 
+						FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ), '--')
 			AS RESTORE_FILELISTONLY
-		, 'RESTORE ' + CASE WHEN cte.type = 'L' THEN 'LOG ' ELSE 'DATABASE ' END + QUOTENAME(cte.database_name) + CHAR(10) + CHAR(9) + 'FROM ' + 
+		, ISNULL('RESTORE ' + CASE WHEN cte.type = 'L' THEN 'LOG ' ELSE 'DATABASE ' END + QUOTENAME(cte.database_name) + CHAR(10) + CHAR(9) + 'FROM ' + 
 			STUFF( (SELECT ', DISK = ''' + mf.physical_device_name + '''' + CHAR(10) + CHAR(9)
 						FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) + 'WITH NORECOVERY, STATS' 
-			+ CASE WHEN @replace = 1 THEN ', REPLACE' ELSE '' END
+			+ CASE WHEN @replace = 1 AND cte.type = 'D'  THEN ', REPLACE' ELSE '' END
 			+ CASE WHEN cte.type = 'D' THEN 
 					(SELECT ', MOVE ''' + mf.name  + ''' TO ''' + (
 						CASE WHEN mf.type_desc = 'ROWS' AND @newDataPath IS NOT NULL 
@@ -202,7 +206,7 @@ SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
 						END + '''' + CHAR(10) + CHAR(9))
 					FROM sys.master_files AS mf WHERE DB_NAME(mf.database_id) = cte.database_name FOR XML PATH(''))
 					ELSE ''
-				END
+				END, '--')
 		AS RESTORE_BACKUP
 	FROM sys.databases AS d
 		LEFT JOIN cte
@@ -210,7 +214,8 @@ SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
 				AND cte.RowNum <= @numBkp
 		LEFT JOIN #is_preferred_replica AS pr
 			ON pr.database_id = d.database_id
-	WHERE d.name LIKE ISNULL(@dbname, d.name)
+	WHERE d.database_id <> 2
+		AND d.name LIKE ISNULL(@dbname, d.name)
 	ORDER BY database_name ASC
 		-- RowNum is descending, so we need to invert the order, this is not a mistake!
 		, CASE WHEN @orderBy = 'ASC' THEN cte.RowNum ELSE NULL END DESC
