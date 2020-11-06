@@ -30,6 +30,7 @@ GO
 --				22/11/2018 RAG	- sspid will look for blocking_session_id
 --								- Added parameter @loginName
 --				02/07/2019 RAG	- Added XML conversion to sqltext (borrowed from sp_WhoIsActive)
+--				09/12/2019 RAG	- Added [outer_sqltext] and [reads] columns
 --
 -- =============================================
 -- =============================================
@@ -91,6 +92,26 @@ SELECT TOP (@n)
 			PATH(''),
 			TYPE
 		) as [sqltext]
+		/*
+		, (SELECT
+			REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+			REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+			REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+					N'--' + NCHAR(13) + NCHAR(10) +
+					
+					 (sqltext.text)
+
+					 +
+			NCHAR(13) + NCHAR(10) + N'--' COLLATE Latin1_General_Bin2,
+			NCHAR(31),N'?'),NCHAR(30),N'?'),NCHAR(29),N'?'),NCHAR(28),N'?'),NCHAR(27),N'?'),NCHAR(26),N'?'),NCHAR(25),N'?'),NCHAR(24),N'?'),NCHAR(23),N'?'),NCHAR(22),N'?'),
+			NCHAR(21),N'?'),NCHAR(20),N'?'),NCHAR(19),N'?'),NCHAR(18),N'?'),NCHAR(17),N'?'),NCHAR(16),N'?'),NCHAR(15),N'?'),NCHAR(14),N'?'),NCHAR(12),N'?'),
+			NCHAR(11),N'?'),NCHAR(8),N'?'),NCHAR(7),N'?'),NCHAR(6),N'?'),NCHAR(5),N'?'),NCHAR(4),N'?'),NCHAR(3),N'?'),NCHAR(2),N'?'),NCHAR(1),N'?'),
+			NCHAR(0),N'') AS [processing-instruction(query)]
+		FOR XML
+			PATH(''),
+			TYPE
+		) as [outer_sqltext]
+		--*/
 		, DB_NAME(r.database_id) as database_Name
 		, s.login_name
 		, r.status
@@ -100,6 +121,7 @@ SELECT TOP (@n)
 				else DATEADD (ss,DATEDIFF (ss,r.start_time,getdate()) / r.percent_complete * 100, r.start_time) 
 			end AS Expected_end_time 
 		, r.cpu_time
+		, r.reads
 		, r.total_elapsed_time
 		, r.granted_query_memory
 		, SUBSTRING(blocking_sqltext.text,
