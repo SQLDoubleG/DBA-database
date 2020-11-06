@@ -63,6 +63,7 @@ GO
 --									but only display it when the job has run at least once
 --				22/10/2019 RAG 	- Added database_name for each step
 --				08/12/2019 RAG 	- Fixed a bug that didn't return correct step information which made sorting incorrect
+--				13/10/2020 RAG 	- Added output_file_name column
 --
 -- =============================================
 -- =============================================
@@ -125,10 +126,10 @@ GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
-DECLARE	@onlyActiveJobs				BIT = 0
+DECLARE	@onlyActiveJobs				BIT = 1
 		, @includeSteps				BIT = 0
-		, @jobName					SYSNAME = NULL
-		, @commandText				SYSNAME = NULL
+		, @jobName					SYSNAME 
+		, @commandText				SYSNAME 
 		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
 	
@@ -160,6 +161,7 @@ CREATE TABLE #jobHistory(
 	, on_fail_step_id		INT					NULL
 	, subsystem				NVARCHAR(40)		NULL
 	, command				NVARCHAR(MAX)		NULL
+	, output_file_name		NVARCHAR(200)		NULL
 	, message				NVARCHAR(MAX)		NULL)
 
 --Get all jobs we're interested
@@ -192,6 +194,7 @@ SELECT j.job_id
 			, '-' AS on_fail_step_id	
 			, '-' AS subsystem
 			, '-' AS command
+			, '-' AS output_file_name
 			, '-' AS message
 			, ROW_NUMBER() OVER (PARTITION BY j.job_id, jh.step_id ORDER BY jh.run_date DESC, jh.run_time DESC) AS rowNumber		
 		FROM #jobs AS j
@@ -216,6 +219,7 @@ SELECT j.job_id
 				, cte.on_fail_step_id	
 				, cte.subsystem
 				, cte.command 
+				, cte.output_file_name 
 				, cte.message
 			FROM cte
 			WHERE cte.rowNumber <= @includeLastNexecutions 
@@ -251,6 +255,7 @@ IF @includeSteps = 1 BEGIN
 			, js.on_fail_step_id	
 			, ISNULL(js.subsystem, '-') AS subsystem
 			, ISNULL(js.command, '-') AS command
+			, ISNULL(js.output_file_name, '-') AS output_file_name
 			, ISNULL(jh.message, '-') AS message
 		FROM 
 		(
@@ -278,7 +283,6 @@ END
 
 -- Get final results
 SELECT  @@SERVERNAME AS server_name
-		, jh.instance_id
 		, j.job_id
 		, CONVERT(VARBINARY(85), j.job_id) AS job_id_binary
 		, j.name AS job_name
@@ -357,6 +361,7 @@ SELECT  @@SERVERNAME AS server_name
 					FOR XML PATH('')), 1, 7, ''), '-') AS schedules
 		, ISNULL(jh.subsystem, '-')   AS subsystem
 		, ISNULL(jh.command, '-')	AS command
+		, ISNULL(jh.output_file_name, '-')	AS output_file_name		
 		, ISNULL(jh.message, '-')	AS message
 		, CASE jh.on_success_action	
 			WHEN 1 THEN 'Quit the job reporting success'
@@ -377,6 +382,9 @@ SELECT  @@SERVERNAME AS server_name
 	FROM #jobs AS j
 		LEFT JOIN #jobHistory AS jh
 			ON jh.job_id = j.job_id
+	WHERE (@commandText IS NULL OR jh.command LIKE @commandText) 
+		AND (@errMessage IS NULL OR jh.message LIKE @errMessage)
+
 	ORDER BY job_name, jh.instance_id DESC, step_id DESC
 	
 DROP TABLE #jobHistory
