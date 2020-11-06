@@ -43,7 +43,11 @@ GO
 --									Current Size > 4000 THEN '1000'
 --									Current Size > 1000 THEN '500'
 --									Other '100'
-
+--				16/02/2019 RAG Changed column order 
+--				22/07/2020 RAG Changes:
+--								- Added parameter @path to find files in a location, can use wildcards
+--								- Changed the [ShrinkFile] column to not shrink if the log file is smaller than 1GB
+--
 -- =============================================
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependancy
@@ -59,11 +63,11 @@ BEGIN
 
 	DECLARE @slashPos	INT		= CASE 
 									WHEN CHARINDEX( ':', @path ) > 0 THEN CHARINDEX( ':', @path ) 
-									WHEN CHARINDEX( '\', @path ) > 0 THEN CHARINDEX( '\', @path ) 
+									WHEN CHARINDEX( '\', @path ) > 0 THEN CHARINDEX( '\', @path ) -- '
 									ELSE NULL 
 								END
 
-	RETURN ( CASE WHEN @slashPos IS NULL THEN '\' ELSE LEFT( @path, @slashPos ) END )
+	RETURN ( CASE WHEN @slashPos IS NULL THEN '\' ELSE LEFT( @path, @slashPos ) END ) --'
 
 END
 GO
@@ -74,7 +78,7 @@ RETURNS SYSNAME
 AS
 BEGIN
 
-	DECLARE @slashPos	INT		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END
+	DECLARE @slashPos	INT		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END --'
 	RETURN RIGHT( @path, @slashPos ) 
 END
 GO
@@ -82,7 +86,8 @@ GO
 -- END of Dependencies
 -- =============================================
 DECLARE	@dbname		SYSNAME = NULL
-		, @fileType	SYSNAME = NULL
+		, @fileType	SYSNAME = NULL -- 'LOG' 'ROWS'
+		, @path		SYSNAME = NULL -- 'Z:%'
 
 SET NOCOUNT ON
 
@@ -197,8 +202,8 @@ WHILE @countDBs <= @numDBs BEGIN
 		USE ' + QUOTENAME(@db) + N'
 
 		UPDATE f	
-			SET f.[filegroup] = ISNULL(sp.name, ''Not Applicable'')
-				, f.[is_FG_readonly] = CASE WHEN FILEGROUPPROPERTY ( sp.name , ''IsReadOnly'' ) = 1 THEN ''YES'' ELSE ''NO'' END
+			SET f.[filegroup] = ISNULL(sp.name, ''N/A'')
+				, f.[is_FG_readonly] = CASE WHEN sp.name IS NULL THEN ''N/A'' WHEN FILEGROUPPROPERTY ( sp.name , ''IsReadOnly'' ) = 1 THEN ''YES'' ELSE ''NO'' END
 				, f.[spaceUsed] = CONVERT(BIGINT, FILEPROPERTY(f.logical_name, ''SpaceUsed'')) 
 				, f.[size] = dbf.[size]
 			FROM #filesUsage AS f
@@ -219,14 +224,17 @@ WHILE @countDBs <= @numDBs BEGIN
 END
 
 SELECT	f.database_id
-		, DB_NAME(f.database_id) AS database_name
 		, f.file_id
+		, DB_NAME(f.database_id) AS database_name
 		, f.[logical_name]
 		, f.type_desc
 		, f.[filegroup]
 		, f.[is_FG_readonly]
 		, CONVERT( DECIMAL(10,2), (f.size * 8. / 1024), 0 ) AS size_mb
 		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS used_mb
+		, CONVERT( DECIMAL(10,2), (f.size * 8. / 1024), 0 ) -
+			CONVERT( DECIMAL(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS free_mb
+		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 100. / f.size) ) AS percentage_used
 		, CASE WHEN f.growth = 0 THEN 'None'
 			ELSE 
 				'By ' + 
@@ -240,23 +248,51 @@ SELECT	f.database_id
 					ELSE 'Limited to ' + CONVERT(VARCHAR, (CONVERT(BIGINT,max_size) * 8) / 1024) + ' MB'
 				END 
 			END AS [AutoGrowth/Maxsize]
-		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 100. / f.size) ) AS percentage_used
 		, CASE WHEN f.type_desc = 'LOG' THEN d.log_reuse_wait_desc ELSE 'n/a' END AS log_reuse_wait_desc
 		, REPLACE (f.physical_name, [tempdb].[dbo].[getFileNameFromPath](f.physical_name), '') AS [Path]
 		, [tempdb].[dbo].[getFileNameFromPath](f.physical_name) AS [FileName]
 		, CONVERT(DECIMAL(10,2), vs.SizeMB / 1024.) AS DriveSizeGB
 		, CONVERT(DECIMAL(10,2), vs.FreeMB / 1024.) AS DriveFreeGB
 		, vs.FreeMB * 100 / SizeMB AS DriveFreePercent
-		, 'USE ' + QUOTENAME(DB_NAME(f.database_id)) + ' DBCC SHRINKFILE (''' + f.[logical_name] COLLATE DATABASE_DEFAULT + ''', xxx)' AS [ShrinkFile]
-		, SizeMB
-		, 'USE [master]' + CHAR(10) 
-			+ 'GO' + CHAR(10) 
-			+ 'ALTER DATABASE' + QUOTENAME(DB_NAME(f.database_id)) 
-			+ ' MODIFY FILE(NAME=' + QUOTENAME(f.[logical_name]) + ', FILEGROWTH=' + CASE WHEN (f.size * 8. / 1024) > 10000 THEN '4000'  
-																						WHEN (f.size * 8. / 1024) > 4000 THEN '1000'
-																						WHEN (f.size * 8. / 1024) > 1000 THEN '500'
-																						ELSE '100'
-																						END + 'MB)' AS [ModifyGrowth]
+		, ISNULL((
+		
+		'USE ' + QUOTENAME(DB_NAME(f.database_id)) +CHAR(10) + 'CHECKPOINT' + CHAR(10) + ' DBCC SHRINKFILE (''' + f.[logical_name] COLLATE DATABASE_DEFAULT + ''', ' + 
+			CONVERT(VARCHAR, CEILING(
+				CASE 
+					WHEN (size * 8 / 1024)			< 1024 THEN NULL
+					--WHEN (f.spaceUsed * 8 / 1024) < 16 THEN 16
+					--WHEN (f.spaceUsed * 8 / 1024) < 32 THEN 32
+					--WHEN (f.spaceUsed * 8 / 1024) < 64 THEN 64
+					--WHEN (f.spaceUsed * 8 / 1024) < 128 THEN 128
+					--WHEN (f.spaceUsed * 8 / 1024) < 256 THEN 256
+					--WHEN (f.spaceUsed * 8 / 1024) < 384 THEN 384
+					--WHEN (f.spaceUsed * 8 / 1024) < 512 THEN 512					
+					WHEN (f.spaceUsed * 8 / 1024)	< 1024 THEN 1024
+					WHEN (f.spaceUsed * 8 / 1024)	< 2048 THEN 2048
+					ELSE CEILING (f.spaceUsed * 8. / 1024 / 1024 )  * 1024
+				END 		
+				)) 
+		+')' + CHAR(10) + 'GO'), '--') AS [ShrinkFile]
+
+		, CASE WHEN is_percent_growth = 1 OR 
+					growth * 8 / 1024 < (CASE WHEN (f.size * 8. / 1024) > 10000 THEN 4000 
+											WHEN (f.size * 8. / 1024) > 4000 THEN 1000
+											WHEN (f.size * 8. / 1024) > 1000 THEN 500
+											ELSE 100
+										END) THEN
+		
+		
+			'USE [master]' + CHAR(10) 
+				+ 'GO' + CHAR(10) 
+				+ 'ALTER DATABASE' + QUOTENAME(DB_NAME(f.database_id)) 
+				+ ' MODIFY FILE(NAME=' + QUOTENAME(f.[logical_name]) + ', FILEGROWTH=' + CASE WHEN (f.size * 8. / 1024) > 10000 THEN '4000'  
+																							WHEN (f.size * 8. / 1024) > 4000 THEN '1000'
+																							WHEN (f.size * 8. / 1024) > 1000 THEN '500'
+																							ELSE '100'
+																							END + 'MB)' + CHAR(10) + 'GO'
+				ELSE '--'
+		END	AS [ModifyGrowth]
+
 	FROM #filesUsage AS f
 		INNER JOIN sys.databases AS d
 			ON d.database_id = f.database_id
@@ -265,6 +301,7 @@ SELECT	f.database_id
 	WHERE f.type_desc = ISNULL(@fileType, f.type_desc)
 		AND source_database_id IS NULL
 		AND d.name LIKE ISNULL(@dbname, d.name)
+		AND f.physical_name LIKE ISNULL( @path, f.physical_name)
 	ORDER BY database_name
 			, f.type_desc DESC 
 			, file_id
