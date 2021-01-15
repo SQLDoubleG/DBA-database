@@ -19,6 +19,11 @@ GO
 -- Create date: 20/05/2013 
 -- Description:	Returns a list of objects which contains the  
 --				given pattern and their definition 
+--
+-- Parameters:
+--				- @pattern			>> Pattern to search for, it will be used as %pattern%
+--				- @databaseName		>> database to search into, allows wildcards. Use NULL for ALL Databases in the server
+--				- @EngineEdition	>> used to force the current database in Azure SQL DB
 -- 
 -- Log History:	18/08/2013 - RAG - Included functionality to look for the pattern in job steps 
 --				19/08/2013 - RAG - Changed Global temp table for a local temp table to avoid concurrency problems 
@@ -32,10 +37,18 @@ GO
 --				30/09/2018 - RAG - Added specific query for foreign keys that will desplay 
 --										the referenced column and referential actions
 --				14/10/2018 - RAG - Added TRY CATCH block to allow databases to be non accessible like secondary non-readble 
+--				14/01/2021 - RAG - Added parameter @EngineEdition
+--
 -- ============================================= 
-DECLARE @pattern		SYSNAME = NULL, 
-		@databaseName	SYSNAME = NULL 
-	
+DECLARE @pattern			SYSNAME = 'pattern'
+		, @databaseName		SYSNAME = 'database' 
+		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+IF @EngineEdition = 8 BEGIN
+-- Azure SQL Database, the script can't run on multiple databases
+	SET @databaseName	= DB_NAME()
+END
+
 SET NOCOUNT ON 
 
 CREATE TABLE #result( 
@@ -65,7 +78,7 @@ INSERT INTO @databases
 		FROM sys.databases  
 		WHERE [name] NOT IN ('model', 'tempdb')  
 			AND state = 0  
-			AND [name] = ISNULL(@databaseName, [name])  
+			AND [name] LIKE ISNULL(@databaseName, [name])  
 		ORDER BY name ASC 
 
 SET @numDB = @@ROWCOUNT 
