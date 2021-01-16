@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON 
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -48,7 +50,6 @@ GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
-SET NOCOUNT ON
 
 DECLARE	@dbname			SYSNAME = NULL
 DECLARE @NewDataPath 	NVARCHAR(512) = NULL

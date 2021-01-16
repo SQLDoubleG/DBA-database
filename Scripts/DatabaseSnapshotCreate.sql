@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -83,8 +85,6 @@ DECLARE	@dbname			SYSNAME	= 'WideWorldImporters'
 		, @snapshotName	SYSNAME = 'WideWorldImporters_ss'	-- IF NULL, it will generate @dbname_yyyymmddhhmmss
 		, @newPath		NVARCHAR(512) = 'C:\SQL\'
 		, @debugging	BIT		= 1		-- CALL THE SP WITH @debugging = 1 TO JUST PRINT OUT THE STATEMENTS
-
-SET NOCOUNT ON
 
 DECLARE @timetext			VARCHAR(15)		= [tempdb].[dbo].[formatTimeToText](NULL) 
 		, @sqlString		NVARCHAR(MAX)

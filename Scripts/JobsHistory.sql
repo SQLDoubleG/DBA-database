@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -133,8 +135,6 @@ DECLARE	@onlyActiveJobs				BIT = 1
 		, @errMessage				NVARCHAR(MAX)
 		, @includeLastNexecutions	INT = 1
 	
-SET NOCOUNT ON
-
 IF ISNULL(@commandText, '') <> '' SET @includeSteps = 1
 IF ISNULL(@errMessage, '') <> '' SET @includeSteps = 1
 

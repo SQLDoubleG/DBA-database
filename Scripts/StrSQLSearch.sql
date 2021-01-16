@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON 
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -22,7 +24,7 @@ GO
 --
 -- Parameters:
 --				- @pattern			>> Pattern to search for, it will be used as %pattern%
---				- @databaseName		>> database to search into, allows wildcards. Use NULL for ALL Databases in the server
+--				- @dbname			>> database to search into, allows wildcards. Use NULL for ALL Databases in the server
 --				- @EngineEdition	>> used to force the current database in Azure SQL DB
 -- 
 -- Log History:	18/08/2013 - RAG - Included functionality to look for the pattern in job steps 
@@ -41,15 +43,15 @@ GO
 --
 -- ============================================= 
 DECLARE @pattern			SYSNAME = 'pattern'
-		, @databaseName		SYSNAME = 'database' 
+		, @dbname			SYSNAME = 'database' 
 		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
 
-IF @EngineEdition = 8 BEGIN
+IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
-	SET @databaseName	= DB_NAME()
+	SET @dbname	= DB_NAME()
 END
 
-SET NOCOUNT ON 
+IF OBJECT_ID('#tempdb..#result')	IS NOT NULL DROP TABLE #result 
 
 CREATE TABLE #result( 
 	databaseName		SYSNAME 
@@ -63,8 +65,7 @@ DECLARE @databases TABLE (
 	,dbname SYSNAME) 
 
 -- Local variables  
-DECLARE @sql				NVARCHAR(MAX) 
-		, @dbname			SYSNAME 
+DECLARE @sqlstring			NVARCHAR(MAX) 
 		, @countDB			INT = 1 
 		, @numDB			INT 
 		, @countResults		INT = 1 
@@ -78,7 +79,7 @@ INSERT INTO @databases
 		FROM sys.databases  
 		WHERE [name] NOT IN ('model', 'tempdb')  
 			AND state = 0  
-			AND [name] LIKE ISNULL(@databaseName, [name])  
+			AND [name] LIKE ISNULL(@dbname, [name])  
 		ORDER BY name ASC 
 
 SET @numDB = @@ROWCOUNT 
@@ -86,8 +87,8 @@ SET @numDB = @@ROWCOUNT
 WHILE @countDB <= @numDB BEGIN 
 	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDB) 
 	
-	SET @sql = N' 
-		USE ' + QUOTENAME(@dbname) + N' 
+	SET @sqlString = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
+		+ N'
 
 		DECLARE @pattern			SYSNAME = ''' + @pattern  + N''' 
 
@@ -163,9 +164,9 @@ WHILE @countDB <= @numDB BEGIN
 						OR a.upd_cmd LIKE ''%'' + @pattern + ''%''  
 		END  
 	' 
-	--SELECT @sql
+	--SELECT @sqlstring
 	BEGIN TRY
-		EXECUTE sp_executesql @sql 
+		EXECUTE sp_executesql @sqlstring 
 	END TRY
 	BEGIN CATCH
 		SET @errMsg = 'There was an error accessing ' + QUOTENAME(@dbname) 
@@ -175,15 +176,20 @@ WHILE @countDB <= @numDB BEGIN
 	SET @countDB = @countDB + 1 
 END		 
 
-INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
-SELECT js.database_name 
-		, j.name + N'. Step ' + CONVERT(NVARCHAR, js.step_id) + N' (' + js.step_name + N')' + CASE WHEN j.enabled = 0 THEN N' (Disabled)' ELSE N'' END 
-		, 'SQL AGENT JOB' 
-		, js.command 
-	FROM msdb.dbo.sysjobs AS j 
-		INNER JOIN msdb.dbo.sysjobsteps AS js 
-			ON js.job_id = j.job_id 
-	WHERE js.command LIKE '%' + @pattern + '%' 
+IF @EngineEdition <> 5 BEGIN
+	SET @sqlstring = N'SELECT js.database_name 
+			, j.name + N''. Step '' + CONVERT(NVARCHAR, js.step_id) + N'' ('' + js.step_name + N'')'' + CASE WHEN j.enabled = 0 THEN N'' (Disabled)'' ELSE N'''' END 
+			, ''SQL AGENT JOB'' 
+			, js.command 
+		FROM msdb.dbo.sysjobs AS j 
+			INNER JOIN msdb.dbo.sysjobsteps AS js 
+				ON js.job_id = j.job_id 
+		WHERE js.command LIKE ''%'' + @pattern + ''%'''
+
+	INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
+	EXECUTE sp_executesql @stmt = @sqlstring, @params = N'@pattern SYSNAME', @pattern = @pattern
+END
+	
 
 SELECT databaseName 
 		, objectName 
@@ -192,5 +198,4 @@ SELECT databaseName
 	FROM #result  
 	ORDER BY 1,3,2 
 
-DROP TABLE #result 
 GO

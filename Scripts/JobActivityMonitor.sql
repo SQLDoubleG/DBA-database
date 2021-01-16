@@ -2,7 +2,7 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
-SET NOCOUNT ON;
+SET NOCOUNT ON
 GO
 --=============================================
 -- Copyright (C) 2019 Raul Gonzalez, @SQLDoubleG

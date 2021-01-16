@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON 
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -94,9 +96,7 @@ DECLARE @dbname			sysname --= 'msdb'
 		, @newLogPath	NVARCHAR(512) = NULL -- 'X:\Logs'
 		, @replace		BIT = 0 -- Set to 1 to add WITH REPLACE
 	
-SET NOCOUNT ON
-
-DECLARE @SQL NVARCHAR(4000)
+DECLARE @sqlstring NVARCHAR(4000)
 
 SET @numBkp		= ISNULL(@numBkp, 1) 
 SET @orderBy	= ISNULL(@orderBy, 'DESC') 
@@ -130,9 +130,9 @@ CREATE TABLE #is_preferred_replica (
 	, is_preferred_replica TINYINT NOT NULL)
 
 IF ISNULL(CONVERT(TINYINT, SERVERPROPERTY('IsHadrEnabled')), 0) = 1 BEGIN 
-	SET @SQL = N'SELECT database_id, sys.fn_hadr_backup_is_preferred_replica(name) FROM sys.databases'
+	SET @sqlstring = N'SELECT database_id, sys.fn_hadr_backup_is_preferred_replica(name) FROM sys.databases'
 	INSERT INTO #is_preferred_replica (database_id, is_preferred_replica)
-	EXECUTE sys.sp_executesql @stmt = @SQL
+	EXECUTE sys.sp_executesql @stmt = @sqlstring
 END
 ELSE BEGIN
 	INSERT INTO #is_preferred_replica (database_id, is_preferred_replica)

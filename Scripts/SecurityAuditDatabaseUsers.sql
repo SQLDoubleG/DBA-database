@@ -15,53 +15,50 @@ GO
 -- PARTICULAR PURPOSE.
 --
 -- =============================================
--- Author:           Raul Gonzalez
--- Create date: 19/08/2013
--- Description:      Returns all database users with database roles and permissions at object level
---                         for the given database or all databases if not specified
+-- Author:      Raul Gonzalez
+-- Create date:	19/08/2013
+-- Description: Returns all database users with database roles and permissions at object level
+--					for the given database or all databases if not specified
 --
--- Change Log:       20/09/2013 RAG - Modified the query to display permissions assigned to User defined database roles
---                         26/09/2013 RAG - Added parameter @includeSystemDBs to include or not System Databases 
---                         21/01/2014 RAG - Added recordset with all database users with their roles
---                         25/03/2014 RAG - Added fuctionality to include permissions for user defined database roles 
---                                                            and to detect orphan users (without a login)
---                         29/02/2016 RAG - Added check for User schema to exist in order to generate a DROP SCHEMA statement
---                         15/03/2016 SZO - Added column granularity to REVOKE statements
---                         16/03/2016 SZO - Added column granularity to [permission_list] column
---                         24/01/2018 RAG - Added column [included_users] which will display all users that are member of a database role
---											Removed condition to exclude system database roles
---                         12/03/2020 RAG - Added column [CREATE_DB_ROLE] 
---                         11/08/2020 RAG - Added parameter @onlyOrphanUsers to identify orphan users
+-- Change Log:	20/09/2013 RAG - Modified the query to display permissions assigned to User defined database roles
+--				26/09/2013 RAG - Added parameter @includeSystemDBs to include or not System Databases 
+--				21/01/2014 RAG - Added recordset with all database users with their roles
+--				25/03/2014 RAG - Added fuctionality to include permissions for user defined database roles 
+--				                                   and to detect orphan users (without a login)
+--				29/02/2016 RAG - Added check for User schema to exist in order to generate a DROP SCHEMA statement
+--				15/03/2016 SZO - Added column granularity to REVOKE statements
+--				16/03/2016 SZO - Added column granularity to [permission_list] column
+--				24/01/2018 RAG - Added column [included_users] which will display all users that are member of a database role
+--									Removed condition to exclude system database roles
+--				12/03/2020 RAG - Added column [CREATE_DB_ROLE] 
+--				11/08/2020 RAG - Added parameter @onlyOrphanUsers to identify orphan users
+--				16/01/2021 RAG - Added parameter @EngineEdition
+--									Removed dependencies and solve collation issues to run on Azure SQL DB
+--									Display 'CONTAINED USER' if that is the case
 --
--- Params are concatenated to the @sql string to avoid problems in databases with different collation than [DBA]
+-- Params are concatenated to the @sqlstring string to avoid problems in databases with different collation than [DBA]
 --
 -- =============================================
--- Dependencies:This Section will create on tempdb any dependancy
--- =============================================
-USE tempdb
-GO
-CREATE FUNCTION [dbo].[getNumericSQLVersion](
-	@ProductVersion NVARCHAR(128)
-)
-	RETURNS DECIMAL(3,1)
-AS
-BEGIN
-	DECLARE @version NVARCHAR(128) = ISNULL(@ProductVersion, CONVERT(NVARCHAR(128),SERVERPROPERTY('ProductVersion')))
-	RETURN CONVERT(DECIMAL(3,1), (LEFT( @version,  CHARINDEX('.', @version, 0) + 1 )) )
+
+DECLARE	@dbname					sysname --= 'msdb'
+		, @db_principal_name	sysname = NULL
+		, @srv_principal_name 	sysname = NULL
+		, @onlyOrphanUsers		BIT		= 1
+		, @includeSystemDBs		BIT		= 1
+		, @EngineEdition		INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+IF @EngineEdition = 5 BEGIN
+-- Azure SQL Database, the script can't run on multiple databases
+	SET @dbname	= DB_NAME()
 END
-GO
--- =============================================
--- END of Dependencies
--- =============================================
-DECLARE	@dbname				sysname --= 'msdb'
-	  , @db_principal_name	sysname = NULL
-	  , @srv_principal_name sysname = NULL
-	  , @onlyOrphanUsers	BIT		= 1
-	  , @includeSystemDBs	BIT		= 1
 
 SET NOCOUNT ON;
 
-DECLARE @countDBs INT = 1, @numDBs INT, @sql NVARCHAR(MAX);
+DECLARE @countDBs INT = 1, @numDBs INT, @sqlstring NVARCHAR(MAX);
+
+IF OBJECT_ID('tempdb..#databases')			IS NOT NULL DROP TABLE #databases;
+IF OBJECT_ID('tempdb..#all_db_users')		IS NOT NULL DROP TABLE #all_db_users;
+IF OBJECT_ID('tempdb..#all_db_permissions') IS NOT NULL DROP TABLE #all_db_permissions;
 
 CREATE TABLE #all_db_users (
 	database_id				INT
@@ -71,6 +68,7 @@ CREATE TABLE #all_db_users (
 	, principal_type_desc	NVARCHAR(60)
 	, default_schema_name	sysname		  NULL
 	, has_db_access			BIT
+	, authentication_type	SYSNAME
 	, database_roles		NVARCHAR(512) NULL
 	, included_users		NVARCHAR(4000) NULL
 	, DROP_USER_SCHEMA		NVARCHAR(256)
@@ -107,17 +105,16 @@ SET @numDBs = @@ROWCOUNT;
 WHILE @countDBs <= @numDBs BEGIN
 
 	SET @dbname = (SELECT name FROM #databases WHERE ID = @countDBs);
-	SET @sql = N'
-              
-            USE ' + QUOTENAME (@dbname)
-				+ N'
-              
+	SET @sqlstring	= CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
+			+ N'
             DECLARE @db_principal_name SYSNAME = '
 				+ ISNULL ((N'''' + @db_principal_name + N''''), N'NULL')
 				+ CONVERT (
 						NVARCHAR(MAX)
 					, N'
-              
+            
+			DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY(''ProductVersion'')),4))
+
             -- All database users and the list of database roles
             INSERT INTO #all_db_users (
                     database_id
@@ -127,6 +124,7 @@ WHILE @countDBs <= @numDBs BEGIN
 					, principal_type_desc
                     , default_schema_name
                     , has_db_access
+					, authentication_type
                     , database_roles
 					, included_users
                     , DROP_USER_SCHEMA
@@ -144,6 +142,7 @@ WHILE @countDBs <= @numDBs BEGIN
 									WHEN dp.state IN (''G'', ''W'') THEN 1 
 									ELSE 0 
 								END AS [has_db_access]
+						, authentication_type_desc
 						, STUFF((SELECT '', '' + dbr.name 
 									FROM sys.database_principals dbr 
 											LEFT JOIN sys.database_role_members AS drm
@@ -163,7 +162,7 @@ WHILE @countDBs <= @numDBs BEGIN
 								END AS DROP_USER_SCHEMA
 						, (SELECT ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
 							''CREATE ROLE '' + QUOTENAME(dbr.name) + CHAR(10) + 
-											CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) >= 11 
+											CASE WHEN @numericVersion >= 11 
 													THEN ''ALTER ROLE '' +  QUOTENAME(dbr.name) + '' ADD MEMBER '' + QUOTENAME(dbp.name)
 													ELSE '' EXECUTE sp_droprolemember '' + QUOTENAME(dbr.name) + '', '' + QUOTENAME(dbp.name) 
 											END + CHAR(10) + ''GO'' + CHAR(10) 
@@ -173,7 +172,7 @@ WHILE @countDBs <= @numDBs BEGIN
 									WHERE dbr.principal_id = drm.role_principal_id
 									FOR XML PATH('''')) AS CREATE_DB_ROLE
 						, (SELECT ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
-											CASE WHEN tempdb.dbo.getNumericSQLVersion(NULL) >= 11 
+											CASE WHEN @numericVersion >= 11 
 													THEN ''ALTER ROLE '' +  QUOTENAME(dbr.name) + '' DROP MEMBER '' + QUOTENAME(dbp.name)
 													ELSE '' EXECUTE sp_droprolemember '' + QUOTENAME(dbr.name) + '', '' + QUOTENAME(dbp.name) 
 											END + CHAR(10) + ''GO'' + CHAR(10) 
@@ -262,7 +261,7 @@ WHILE @countDBs <= @numDBs BEGIN
 																WHERE col_dp.grantee_principal_id = db_per.grantee_principal_id
 																	AND col_dp.major_id = db_per.major_id
 																	AND col_dp.[type] = db_per.[type]
-																FOR XML PATH('''')), 1, 1, '''')
+																FOR XML PATH('''')), 1, 1, '''') COLLATE DATABASE_DEFAULT
 														+ '' )''
 													ELSE [permission_name]
 												END AS [permission_name]
@@ -350,8 +349,8 @@ WHILE @countDBs <= @numDBs BEGIN
 		              
             ');
 
-	--SELECT @sql
-	EXECUTE sp_executesql @sql;
+	--SELECT @sqlstring
+	EXECUTE sp_executesql @sqlstring;
 
 	SET @countDBs = @countDBs + 1;
 END;
@@ -361,10 +360,10 @@ SELECT DB_NAME (dbp.database_id)							 AS database_name
 	, dbp.principal_type_desc
 	, dbp.default_schema_name
 	, CASE WHEN dbp.has_db_access = 1 THEN 'Yes' ELSE 'No' END AS has_db_access
-	, sp.name												 AS login_name
-	, sp.type_desc										 login_type
+	, CASE WHEN sp.name IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'N/A' ELSE sp.name END	AS login_name
+	, CASE WHEN sp.type_desc IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'CONTAINED USER' ELSE sp.name END	AS login_type
 	, dbp.database_roles
-	, dbp.included_users
+	, ISNULL(dbp.included_users, '') AS included_users
 	, dbp.DROP_USER_SCHEMA
 	, dbp.CREATE_DB_ROLE
 	, dbp.DROP_DB_ROLE
@@ -382,10 +381,10 @@ SELECT DB_NAME (dbp.database_id)							 AS database_name
 
 SELECT DB_NAME (dbp.database_id) AS database_name
 		, dbp.principal_name
-		, dbp.principal_type_desc
-		, sp.name					 AS login_name
-		, sp.type_desc			 login_type
-		, dbp.class_desc
+		--, dbp.principal_type_desc
+		--, sp.name					 AS login_name
+		--, sp.type_desc			 login_type
+		--, dbp.class_desc
 		, dbp.object_name
 		, dbp.permission_list
 		, dbp.permission_state_desc
@@ -401,15 +400,4 @@ SELECT DB_NAME (dbp.database_id) AS database_name
 			)
 	ORDER BY database_name, dbp.principal_name, dbp.class_desc, dbp.object_name;
 
-DROP TABLE #databases;
-DROP TABLE #all_db_users;
-DROP TABLE #all_db_permissions;
-
-GO
--- =============================================
--- Dependencies:This Section will remove any dependancy
--- =============================================
-USE tempdb
-GO
-DROP FUNCTION [dbo].[getNumericSQLVersion]
 GO

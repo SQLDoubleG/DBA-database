@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON 
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -89,12 +91,8 @@ DECLARE	@dbname		SYSNAME = NULL
 		, @fileType	SYSNAME = NULL -- 'LOG' 'ROWS'
 		, @path		SYSNAME = NULL -- 'Z:%'
 
-SET NOCOUNT ON
-
 IF OBJECT_ID('tempdb..#dbs')			IS NOT NULL DROP TABLE #dbs
-
 IF OBJECT_ID('tempdb..#filesUsage')		IS NOT NULL DROP TABLE #filesUsage
-
 IF OBJECT_ID('tempdb..#volume_stats')	IS NOT NULL DROP TABLE #volume_stats
 
 -- Databases we will loop through
@@ -306,11 +304,6 @@ SELECT	f.database_id
 			, f.type_desc DESC 
 			, file_id
 
-IF OBJECT_ID('tempdb..#dbs')			IS NOT NULL DROP TABLE #dbs
-
-IF OBJECT_ID('tempdb..#filesUsage')		IS NOT NULL DROP TABLE #filesUsage
-
-IF OBJECT_ID('tempdb..#volume_stats')	IS NOT NULL DROP TABLE #volume_stats
 OnError:
 GO
 -- =============================================

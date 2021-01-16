@@ -30,6 +30,7 @@ GO
 --
 -- Change Log:	07/05/2014 RAG Created
 -- 				07/09/2020 RAG Changed Included columns order to be alphabetical
+--				14/01/2021 RAG Added parameter @EngineEdition
 --				
 -- =============================================
 DECLARE @dbname			SYSNAME		= NULL
@@ -37,12 +38,25 @@ DECLARE @dbname			SYSNAME		= NULL
 		, @sortInTempdb	NVARCHAR(3)	= 'ON'	-- Set to ON to reduce creation time, watch tempdb though!!!
 		, @online		NVARCHAR(3)	= 'ON'	-- Set to ON to avoid table locks
 		, @maxdop		TINYINT		= 0		-- 0 to use the actual number of processors or fewer based on the current system workload
+		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+IF @EngineEdition = 5 BEGIN
+-- Azure SQL Database, the script can't run on multiple databases
+	SET @dbname	= DB_NAME()
+END
 	
 SET NOCOUNT ON
 
 SET @sortInTempdb	= ISNULL(@sortInTempdb, 'ON')
 SET @online			= CASE WHEN SERVERPROPERTY('EngineEdition') >= 3 THEN ISNULL(@online, 'ON') ELSE 'OFF' END
 SET @maxdop			= ISNULL(@maxdop, 0)
+
+IF OBJECT_ID('tempdb..#databases') 		IS NOT NULL DROP TABLE #databases
+IF OBJECT_ID('tempdb..#mix') 			IS NOT NULL DROP TABLE #mix
+IF OBJECT_ID('tempdb..#mixc') 			IS NOT NULL DROP TABLE #mixc
+IF OBJECT_ID('tempdb..#r') 				IS NOT NULL DROP TABLE #r
+IF OBJECT_ID('tempdb..#stats') 			IS NOT NULL DROP TABLE #stats
+IF OBJECT_ID('tempdb..#stats_density') 	IS NOT NULL DROP TABLE #stats_density
 
 -- All missing indexes 
 CREATE TABLE #mix(
@@ -103,7 +117,7 @@ CREATE TABLE #stats_density(
 	, Columns		NVARCHAR(4000)
 )
 
-DECLARE @sql		NVARCHAR(MAX)
+DECLARE @sqlString	NVARCHAR(MAX)
 		, @countDB	INT = 1
 		, @numDB	INT
 	
@@ -155,8 +169,8 @@ IF @numDB > 0 BEGIN
 		SET @dbname = (SELECT database_name from #databases WHERE ID = @countDB)
 
 
-		SET @sql = N'
-			USE ' + QUOTENAME(@dbname) + CONVERT( NVARCHAR(MAX), N'	
+	SET @sqlString = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
+			+ N'
 		
 			DECLARE @count_ix		INT = 1
 			DECLARE @num_ix			INT
@@ -274,10 +288,10 @@ IF @numDB > 0 BEGIN
 				SELECT DISTINCT database_id, database_name, index_handle, object_id	, object_name, column_id, column_name, column_usage, All_Density
 					FROM #stats
 
-		')
+		'
 
-		--PRINT @sql
-		EXEC sp_executesql @sql
+		--PRINT @sqlstring
+		EXEC sp_executesql @sqlstring
 				, @params = N'@tableName SYSNAME' 
 				, @tableName = @tableName 
 
@@ -347,10 +361,4 @@ SELECT mix.database_id
 			, mix.object_name
 			, mixgs.avg_user_impact DESC
 
-DROP TABLE #databases
-DROP TABLE #mix
-DROP TABLE #mixc
-DROP TABLE #r
-DROP TABLE #stats
-DROP TABLE #stats_density
 GO

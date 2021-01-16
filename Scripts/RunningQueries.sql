@@ -2,6 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 SET ANSI_NULLS ON
 GO
+SET NOCOUNT ON
+GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
 -- All rights reserved.
@@ -31,43 +33,21 @@ GO
 --								- Added parameter @loginName
 --				02/07/2019 RAG	- Added XML conversion to sqltext (borrowed from sp_WhoIsActive)
 --				09/12/2019 RAG	- Added [outer_sqltext] and [reads] columns
+--				16/01/2021 RAG	- Removed dependencies to allow run it in Azure SQL DB
 --
 -- =============================================
--- =============================================
--- Dependencies:This Section will create on tempdb any dependant function
--- =============================================
-USE tempdb
-GO
-CREATE FUNCTION [dbo].[formatSecondsToHR](
-	@nSeconds INT
-)
-RETURNS VARCHAR(24)
-AS
-BEGIN
-	-- Declare the return variable here
-	DECLARE @R VARCHAR(24)
 
-	SET @R = ISNULL(NULLIF(CONVERT(VARCHAR(24), @nSeconds / 3600 / 24 ),'0') + '.', '') + 
-				RIGHT('00' + CONVERT(VARCHAR(24), @nSeconds / 3600 % 24 ), 2) + ':' + 
-				RIGHT('00' + CONVERT(VARCHAR(24), @nSeconds / 60 % 60), 2) + ':' + 
-				RIGHT('00' + CONVERT(VARCHAR(24), @nSeconds % 60), 2)
-
-	RETURN @R
-
-END
-GO
--- =============================================
--- END of Dependencies
--- =============================================
 DECLARE @sspid	int 
 DECLARE @loginName SYSNAME  --= 'domain\user'
-
-SET NOCOUNT ON
-
 DECLARE @n INT = 2147483647
 
 SELECT TOP (@n)
-		[tempdb].[dbo].[formatSecondsToHR](DATEDIFF(SECOND, r.start_time, GETDATE())) AS execution_time
+		ISNULL(NULLIF( CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) / 3600 / 24 ),'0') + '.', '') + 
+			RIGHT('00' + CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) / 3600 % 24 ), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) / 60 % 60), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) % 60), 2) AS execution_time
+
+
 		, r.session_id
 		, r.blocking_session_id
 		, r.percent_complete
@@ -155,11 +135,4 @@ SELECT TOP (@n)
 	ORDER BY r.start_time ASC
 	OPTION (OPTIMIZE FOR (@n=1))
 
-GO
--- =============================================
--- Dependencies:This Section will remove any dependancy
--- =============================================
-USE tempdb
-GO
-DROP FUNCTION [dbo].[formatSecondsToHR]
 GO
