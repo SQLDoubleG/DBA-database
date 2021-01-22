@@ -24,41 +24,50 @@ GO
 -- Assupmtions:	Depending on the user executing the SP, the metadata displayed can vary 
 --				User 'reporting' is granted with view definition permission to guarantee all info is complete in the report server 
 -- 
--- Change Log:	24/09/2013 RAG Added column row_count for tables 
---				25/10/2013 RAG Changed the calculation of row_count and added TotalSpaceMB, UsedSpaceMB and UnusedSpaceMB for tables 
---				28/10/2013 RAG Added filter to not process Objects created by an internal SQL Server component (is_ms_shipped = 0) 
---				29/10/2013 RAG Added parameter column name, if provided, only tables which match the column name will appear on the list 
---				29/10/2013 RAG @tableName and @columnName can come with wildcards as the comparison use LIKE  
---				29/10/2013 RAG included column Collation  
---				14/11/2013 RAG Changed the comparison of database name to like, this way we can call the SP with database name 'dbName%' 
---				02/12/2013 RAG Added column IsIdentity 
---				11/12/2013 RAG Added a new resultset for when @columnName is specified 
---				13/12/2013 RAG Added a DataSpace column 
---				28/02/2014 RAG Change on how data sizes are calculated to get same results as Table - properties - storage, also included Index Size 
---				29/10/2014 RAG Added Columns LastUserAccess and TotalUserAccess aggregating data from sys.dm_db_index_usage_stats 
---				09/03/2015 RAG Added Columns tableType, HEAP or CLUSTERED 
---				30/03/2015 RAG Changed the way of counting rows to consider partitioned tables 
---				01/05/2015 RAG Use total_pages to calculate total size 
---				22/03/2016 RAG Added indexed views to the results 
---								Create temp table for columns using SELECT INTO as it is shorter and have the same definition 
---				13/04/2016 RAG Changed the way [IndexSpaceUsed] is calculated to display total size of non clustered indexes 
---				14/07/2016 SZO Removed no longer necessary comments from the code block. 
---				04/10/2016 RAG Changes due to case sensitivity (column definition) 
---				15/02/2017 RAG Changed table type to include Clustered columnstore by getting indexes.type_desc instead of hardcoded HEAP and CLUSTERED 
---				14/01/2021 RAG Added parameter @EngineEdition
+-- Change Log:	24/09/2013	RAG	- Added column row_count for tables 
+--				25/10/2013	RAG	- Changed the calculation of row_count and added TotalSpaceMB, UsedSpaceMB and UnusedSpaceMB for tables 
+--				28/10/2013	RAG	- Added filter to not process Objects created by an internal SQL Server component (is_ms_shipped = 0) 
+--				29/10/2013	RAG	- Added parameter column name, if provided, only tables which match the column name will appear on the list 
+--				29/10/2013	RAG	- @tableName and @columnName can come with wildcards as the comparison use LIKE  
+--				29/10/2013	RAG	- included column Collation  
+--				14/11/2013	RAG	- Changed the comparison of database name to like, this way we can call the SP with database name 'dbName%' 
+--				02/12/2013	RAG	- Added column IsIdentity 
+--				11/12/2013	RAG	- Added a new resultset for when @columnName is specified 
+--				13/12/2013	RAG	- Added a DataSpace column 
+--				28/02/2014	RAG	- Change on how data sizes are calculated to get same results as Table - properties - storage, also included Index Size 
+--				29/10/2014	RAG	- Added Columns LastUserAccess and TotalUserAccess aggregating data from sys.dm_db_index_usage_stats 
+--				09/03/2015	RAG	- Added Columns tableType, HEAP or CLUSTERED 
+--				30/03/2015	RAG	- Changed the way of counting rows to consider partitioned tables 
+--				01/05/2015	RAG	- Use total_pages to calculate total size 
+--				22/03/2016	RAG	- Added indexed views to the results 
+--							Cre	- ate temp table for columns using SELECT INTO as it is shorter and have the same definition 
+--				13/04/2016	RAG	- Changed the way [IndexSpaceUsed] is calculated to display total size of non clustered indexes 
+--				14/07/2016	SZO	- Removed no longer necessary comments from the code block. 
+--				04/10/2016	RAG	- Changes due to case sensitivity (column definition) 
+--				15/02/2017	RAG	- Changed table type to include Clustered columnstore by getting indexes.type_desc instead of hardcoded HEAP and CLUSTERED 
+--				14/01/2021	RAG	- Added parameter @EngineEdition
+--				21/01/2021	RAG	- Added whether the Primary Key is clustered or not
+--				22/01/2021	RAG	- Added parameter @sortOrder with the possible values NULL (alphabetically), size (In MB desc), row_count (desc)
+--									Only aplies for @onlyTablesList = 1
 --				 
 -- ============================================= 
 GO
 
-DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
-
 DECLARE 
-	@dbname				SYSNAME = NULL -- 'msdb'
-	, @schemaName		SYSNAME = NULL 
-	, @tableName		SYSNAME = NULL 
-	, @columnName		SYSNAME = NULL 
-	, @onlyTablesList	BIT		= 0
-	, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+	@dbname				SYSNAME = NULL
+	, @schemaName		SYSNAME = NULL
+	, @tableName		SYSNAME = NULL
+	, @columnName		SYSNAME = NULL
+	, @onlyTablesList	BIT		= 1
+	, @sortOrder		SYSNAME = NULL
+
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
+
+DECLARE @EngineEdition	INT	= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
@@ -93,7 +102,7 @@ CREATE TABLE #resultTables
 	, IsIdentity		VARCHAR(3)		NULL 
 	, Mandatory			VARCHAR(3)		NULL 
 	, DefaultValue		NVARCHAR(MAX)	NULL 
-	, PrimaryKey		VARCHAR(3)		NULL 
+	, PrimaryKey		VARCHAR(30)		NULL 
 	, ForeignKey		VARCHAR(3)		NULL 
 	, IsComputed		VARCHAR(3)		NULL 
 	, Collation			SYSNAME			NULL 
@@ -142,10 +151,8 @@ WHILE @countDBs <= @numDBs BEGIN
 		WHERE ID = @countDBs 
 
 	SET @sqlstring = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
-	+ N'
-		DECLARE @schemaName SYSNAME = ' + ISNULL('''' + @schemaName+ '''','NULL')  + N' 
-		DECLARE @tableName	SYSNAME = ' + ISNULL('''' + @tableName + '''','NULL')  + CONVERT(NVARCHAR(MAX), N' 
-
+		+ CONVERT(NVARCHAR(MAX), N'
+		
 		TRUNCATE TABLE #db_triggers 
 		TRUNCATE TABLE #index_usage_stats 
 
@@ -270,17 +277,18 @@ WHILE @countDBs <= @numDBs BEGIN
 					, ius.last_user_access 
 					, total_user_access 
 	') 
-	PRINT @sqlstring
+	--SELECT @sqlstring
 	-- Insert all tables with their descriptions 
-	EXECUTE sp_executesql @sqlstring
+	EXECUTE sp_executesql 
+				@stmt = @sqlstring
+				, @params = N'@schemaName SYSNAME, @tableName SYSNAME'
+				, @schemaName = @schemaName  
+				, @tableName = @tableName 
 	
 	IF @onlyTablesList = 0 BEGIN  
 
 		SET @sqlstring = CASE WHEN @EngineEdition <> 8 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
-			+ N'
-			DECLARE @schemaName SYSNAME = ' + ISNULL('''' + @schemaName+ '''','NULL')  + N' 
-			DECLARE @tableName	SYSNAME = ' + ISNULL('''' + @tableName + '''','NULL')  + N' 
-			DECLARE @columnName	SYSNAME = ' + ISNULL('''' + @columnName + '''','NULL')  + N' 
+			+ CONVERT(NVARCHAR(MAX), N'
 			
 			INSERT INTO #resultColumns 
 					(databaseName 
@@ -325,16 +333,14 @@ WHILE @countDBs <= @numDBs BEGIN
 							WHEN df.definition IS NOT NULL THEN SUBSTRING(df.definition, 2, LEN(df.definition)-2) -- to remove extra parenthesis 
 							ELSE '''' 
 						END 
-					, CASE WHEN EXISTS (SELECT 1  
+					, (SELECT ''Yes (''  + CASE WHEN ix.type > 1 THEN ''Non-'' ELSE '''' END + ''Clustered)''
 											FROM sys.index_columns AS ixc  
 												LEFT JOIN sys.indexes AS ix 
 													ON ix.object_id = i.object_id 
 														AND ix.index_id = ixc.index_id 
 											WHERE ixc.object_id = i.object_id  
 												AND ixc.column_id = c.column_id  
-												AND ix.is_primary_key = 1 ) THEN ''Yes'' 
-							ELSE '''' 
-						END 
+												AND ix.is_primary_key = 1 ) 
 					, CASE  
 							WHEN fk.object_id IS NOT NULL THEN ''Yes'' 
 							ELSE '''' 
@@ -380,12 +386,16 @@ WHILE @countDBs <= @numDBs BEGIN
 					AND OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(i.object_id)) 
 					AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(i.object_id)) 
 					AND c.name LIKE ISNULL(@columnName, c.name) 
-		' 
-		--PRINT @sqlstring 
+		')
+		PRINT @sqlstring 
 		-- Insert all Columns for all tables			 
-		EXECUTE sp_executesql @sqlstring
-
-	END -- IF @onlyTablesList = 0  
+		EXECUTE sp_executesql 
+				@stmt = @sqlstring
+				, @params = N'@schemaName SYSNAME, @tableName SYSNAME, @columnName SYSNAME'
+				, @schemaName = @schemaName  
+				, @tableName = @tableName 
+				, @columnName = @columnName 
+		END -- IF @onlyTablesList = 0  
 
 	SET @countDBs += 1	 
 END 
@@ -405,10 +415,14 @@ IF @onlyTablesList = 1 BEGIN
 			, ISNULL(CONVERT(VARCHAR,TotalUserAccess), '') AS TotalUserAccess 
 			, ISNULL(TableTriggers,'') AS TableTriggers 
 			, ISNULL(TableDescription,'') AS TableDescription 
-		FROM #resultTables 
-		ORDER BY databaseName 
-			, schemaName 
-			, tableName 
+		FROM #resultTables  AS r
+		ORDER BY 
+				CASE WHEN @sortOrder = 'size' THEN r.TotalSpaceMB 
+					WHEN @sortOrder = 'row_count' THEN r.row_count 
+				ELSE NULL END DESC
+				, databaseName 
+				, schemaName 
+				, tableName 
 END  
 ELSE BEGIN 
 

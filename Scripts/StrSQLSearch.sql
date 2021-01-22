@@ -40,18 +40,26 @@ GO
 --										the referenced column and referential actions
 --				14/10/2018 - RAG - Added TRY CATCH block to allow databases to be non accessible like secondary non-readble 
 --				14/01/2021 - RAG - Added parameter @EngineEdition
+--				20/01/2021 - RAG - Added table name to Default constraint objectName
 --
 -- ============================================= 
 DECLARE @pattern			SYSNAME = 'pattern'
-		, @dbname			SYSNAME = 'database' 
+		, @dbname			SYSNAME = NULL
 		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
 	SET @dbname	= DB_NAME()
 END
 
-IF OBJECT_ID('#tempdb..#result')	IS NOT NULL DROP TABLE #result 
+SET @pattern = '%' + @pattern + '%'
+
+IF OBJECT_ID('tempdb..#result')	IS NOT NULL DROP TABLE #result 
 
 CREATE TABLE #result( 
 	databaseName		SYSNAME 
@@ -90,8 +98,6 @@ WHILE @countDB <= @numDB BEGIN
 	SET @sqlString = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
 		+ N'
 
-		DECLARE @pattern			SYSNAME = ''' + @pattern  + N''' 
-
 		INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
 			SELECT DB_NAME() 
 					, QUOTENAME(OBJECT_SCHEMA_NAME(o.object_id)) + ''.'' + QUOTENAME(o.name) 
@@ -100,7 +106,7 @@ WHILE @countDB <= @numDB BEGIN
 				FROM sys.objects as o 
 					LEFT JOIN sys.sql_modules as m 
 						ON m.object_id = o.object_id 
-				WHERE ( o.name LIKE ''%'' + @pattern + ''%'' OR m.definition LIKE ''%'' + @pattern + ''%'' ) 
+				WHERE ( o.name LIKE @pattern OR m.definition LIKE @pattern ) 
 					-- handled in the final union, creates duplicate results. 
 					AND o.type_desc NOT IN (''CHECK_CONSTRAINT'', ''DEFAULT_CONSTRAINT'', ''FOREIGN_KEY_CONSTRAINT'') 
 					AND o.is_ms_shipped = 0 
@@ -117,11 +123,13 @@ WHILE @countDB <= @numDB BEGIN
 						ON o.object_id = c.object_id 
 					INNER JOIN systypes as t 
 						ON t.xusertype = c.user_type_id 
-				WHERE c.name LIKE ''%'' + @pattern + ''%'' 
+				WHERE c.name LIKE @pattern 
 					AND is_ms_shipped = 0 
 			UNION 
 			SELECT DB_NAME() 
-					, QUOTENAME(OBJECT_SCHEMA_NAME(o.[object_id])) + ''.'' + QUOTENAME(o.name) 
+					, QUOTENAME(OBJECT_SCHEMA_NAME(o.[parent_object_id])) + ''.''
+						+ QUOTENAME(OBJECT_NAME(o.[parent_object_id])) + ''.''
+						+ QUOTENAME(o.name) 
 					, o.type_desc 
 					, RTRIM(LTRIM(ISNULL(dc.[definition], cc.[definition]))) 
 				FROM sys.objects AS o 
@@ -129,8 +137,8 @@ WHILE @countDB <= @numDB BEGIN
 						ON o.[object_id] = dc.[object_id] 
 					LEFT JOIN sys.check_constraints AS cc 
 						ON o.[object_id] = cc.[object_id] 
-				WHERE (dc.[definition] LIKE ''%'' + @pattern + ''%'' OR cc.[definition] LIKE ''%'' + @pattern + ''%'' 
-						OR dc.name LIKE ''%'' + @pattern + ''%'' OR cc.name LIKE ''%'' + @pattern + ''%'') 
+				WHERE (dc.[definition] LIKE @pattern OR cc.[definition] LIKE @pattern 
+						OR dc.name LIKE @pattern OR cc.name LIKE @pattern) 
 					AND o.is_ms_shipped = 0 
 			UNION 
 			SELECT DB_NAME() 
@@ -147,7 +155,7 @@ WHILE @countDB <= @numDB BEGIN
 					LEFT JOIN sys.foreign_key_columns AS fkc
 						ON fkc.constraint_object_id = fk.object_id
 
-				WHERE o.name LIKE ''%'' + @pattern + ''%'' 
+				WHERE o.name LIKE @pattern 
 					AND o.is_ms_shipped = 0 
 
 
@@ -158,15 +166,15 @@ WHILE @countDB <= @numDB BEGIN
 						, ''REPLICATION ARTICLE'' 
 						, '''' 
 					FROM dbo.sysarticles AS a							 
-					WHERE a.name LIKE ''%'' + @pattern + ''%''  
-						OR a.del_cmd LIKE ''%'' + @pattern + ''%''  
-						OR a.ins_cmd LIKE ''%'' + @pattern + ''%''  
-						OR a.upd_cmd LIKE ''%'' + @pattern + ''%''  
+					WHERE a.name LIKE @pattern  
+						OR a.del_cmd LIKE @pattern  
+						OR a.ins_cmd LIKE @pattern  
+						OR a.upd_cmd LIKE @pattern  
 		END  
 	' 
 	--SELECT @sqlstring
 	BEGIN TRY
-		EXECUTE sp_executesql @sqlstring 
+		EXECUTE sp_executesql @stmt = @sqlstring, @params = N'@pattern SYSNAME', @pattern = @pattern
 	END TRY
 	BEGIN CATCH
 		SET @errMsg = 'There was an error accessing ' + QUOTENAME(@dbname) 
@@ -184,7 +192,7 @@ IF @EngineEdition <> 5 BEGIN
 		FROM msdb.dbo.sysjobs AS j 
 			INNER JOIN msdb.dbo.sysjobsteps AS js 
 				ON js.job_id = j.job_id 
-		WHERE js.command LIKE ''%'' + @pattern + ''%'''
+		WHERE js.command LIKE @pattern'
 
 	INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
 	EXECUTE sp_executesql @stmt = @sqlstring, @params = N'@pattern SYSNAME', @pattern = @pattern

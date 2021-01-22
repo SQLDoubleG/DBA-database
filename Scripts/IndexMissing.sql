@@ -28,10 +28,13 @@ GO
 --				
 -- Assupmtions:	
 --
--- Change Log:	07/05/2014 RAG Created
--- 				07/09/2020 RAG Changed Included columns order to be alphabetical
---				14/01/2021 RAG Added parameter @EngineEdition
---				
+-- Change Log:	07/05/2014	RAG	- Created
+-- 				07/09/2020	RAG	- Changed Included columns order to be alphabetical
+--				14/01/2021	RAG	- Added parameter @EngineEdition
+--				22/01/2021	RAG	- Changed the column [included_columns] 
+--									to display them in alphabetical order like the create statement
+--								- Removed database name from the object name
+--
 -- =============================================
 DECLARE @dbname			SYSNAME		= NULL
 		, @tableName	SYSNAME		= NULL
@@ -39,6 +42,11 @@ DECLARE @dbname			SYSNAME		= NULL
 		, @online		NVARCHAR(3)	= 'ON'	-- Set to ON to avoid table locks
 		, @maxdop		TINYINT		= 0		-- 0 to use the actual number of processors or fewer based on the current system workload
 		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
@@ -300,16 +308,22 @@ IF @numDB > 0 BEGIN
 	END
 END
 
-SELECT mix.database_id
-		, mix.database_name
-		, mix.object_name
+SELECT mix.database_name
+		, REPLACE(mix.object_name, QUOTENAME(mix.database_name) + '.','') AS object_name
 		, row_count
 		, TotalSpaceMB
 		, DataSpaceMB
 		, IndexSpaceMB
-		, mix.equality_columns
-		, mix.inequality_columns
-		, mix.included_columns
+		, ISNULL(mix.equality_columns, '') AS equality_columns
+		, ISNULL(mix.inequality_columns, '') AS inequality_columns
+		, ISNULL(
+			STUFF((SELECT ', ' + column_name 
+							FROM #r AS r
+							WHERE r.index_handle = mix.index_handle
+								AND r.column_usage = 'INCLUDE'
+							ORDER BY column_name ASC
+							FOR XML PATH('')), 1, 2, ''), '') AS included_columns
+
 		, mixgs.avg_user_impact
 		, mixgs.user_seeks
 		, mixgs.user_scans

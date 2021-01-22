@@ -32,10 +32,11 @@ GO
 --				05/02/2020 RAG 	- Changed the order that included columns are displayed to be alphabetically
 --				01/09/2020 RAG 	- Added temp table to prestage index usage stats for performance
 --				14/01/2021 RAG	- Added parameter @EngineEdition
+--				19/01/2021 RAG	- Added parameter @includeFrag to add fragmentation levels (limited)
 --				
 -- =============================================
 DECLARE 
-	@dbname				SYSNAME		
+	@dbname				SYSNAME		= NULL
 	, @schemaName		SYSNAME		
 	, @tableName		SYSNAME		
 	, @sortInTempdb		NVARCHAR(3)	= 'ON'	-- set to on to reduce creation time, watch tempdb though!!!
@@ -43,12 +44,23 @@ DECLARE
 	, @online			NVARCHAR(3)	= 'ON'	-- Set to ON to avoid table locks
 	, @maxdop			TINYINT		= 0		-- 0 to use the actual number of processors or fewer based on the current system workload
 	, @sortOrder		SYSNAME		= 'index_id'
+	, @includeFrag		BIT			= 0		-- It will run sys.dm_db_index_physical_stats which will slow down the process, HANDLE WITH CARE!
 	, @includeTotals	BIT			= 0		-- Will return the second recordset
 	, @EngineEdition	INT			= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
 	SET @dbname	= DB_NAME()
+END
+
+IF @includeFrag <> 0 AND @dbname IS NULL BEGIN
+	RAISERROR ('@includeFrag is enabled, please specify one database', 0, 0, 0)
+	GOTO Error
 END
 
 SET @sortInTempdb	= ISNULL(@sortInTempdb, 'ON')
@@ -61,31 +73,32 @@ IF OBJECT_ID('tempdb..#result')		IS NOT NULL DROP TABLE #result
 IF OBJECT_ID('tempdb..#databases')	IS NOT NULL DROP TABLE #databases
 
 CREATE TABLE #result 
-	( ID						INT IDENTITY(1,1)	NOT NULL
-	, DROP_INDEX_STATEMENT		NVARCHAR(4000)		NULL
-	, CREATE_INDEX_STATEMENT	NVARCHAR(4000)		NULL
-	, [index_columns]			NVARCHAR(4000)		NULL
-	, included_columns			NVARCHAR(4000)		NULL
-	, filter					NVARCHAR(4000)		NULL
-	, dbname					SYSNAME				NULL
-	, tableName					SYSNAME				NULL
-	, index_id					INT					NULL
-	, partition_number			INT					NULL
-	, index_name				SYSNAME				NULL
-	, index_type				SYSNAME				NULL
-	, is_primary_key			VARCHAR(3)			NULL
-	, is_unique					VARCHAR(3)			NULL
-	, is_disabled				VARCHAR(3)			NULL
-	, row_count					BIGINT 				NULL
-	, reserved_MB				DECIMAL(10,2)		NULL
-	, size_MB					DECIMAL(10,2)		NULL
-	, fill_factor				TINYINT				NULL
-	, user_seeks				BIGINT				NULL
-	, user_scans				BIGINT				NULL
-	, user_lookups				BIGINT				NULL
-	, user_updates				BIGINT				NULL
-	, filegroup_desc			SYSNAME				NULL
-	, data_compression_desc		SYSNAME				NULL		
+	( ID							INT IDENTITY(1,1)	NOT NULL
+	, DROP_INDEX_STATEMENT			NVARCHAR(4000)		NULL
+	, CREATE_INDEX_STATEMENT		NVARCHAR(4000)		NULL
+	, [index_columns]				NVARCHAR(4000)		NULL
+	, included_columns				NVARCHAR(4000)		NULL
+	, filter						NVARCHAR(4000)		NULL
+	, dbname						SYSNAME				NULL
+	, tableName						SYSNAME				NULL
+	, index_id						INT					NULL
+	, partition_number				INT					NULL
+	, index_name					SYSNAME				NULL
+	, index_type					SYSNAME				NULL
+	, is_primary_key				VARCHAR(3)			NULL
+	, is_unique						VARCHAR(3)			NULL
+	, is_disabled					VARCHAR(3)			NULL
+	, row_count						BIGINT 				NULL
+	, reserved_MB					DECIMAL(10,2)		NULL
+	, size_MB						DECIMAL(10,2)		NULL
+	, fill_factor					TINYINT				NULL
+	, user_seeks					BIGINT				NULL
+	, user_scans					BIGINT				NULL
+	, user_lookups					BIGINT				NULL
+	, user_updates					BIGINT				NULL
+	, filegroup_desc				SYSNAME				NULL
+	, data_compression_desc			SYSNAME				NULL	
+	, avg_fragmentation_in_percent	FLOAT				NULL
 )
 
 CREATE TABLE #databases 
@@ -119,9 +132,6 @@ WHILE @countDB <= @numDB BEGIN
 	SET @sqlString = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
 			+ N'
 		
-		DECLARE @tableName SYSNAME = ' + CASE WHEN @tableName IS NULL THEN N'NULL' ELSE N'''' + @tableName + N'''' END +  N'
-		DECLARE @schemaName SYSNAME = ' + CASE WHEN @schemaName IS NULL THEN N'NULL' ELSE N'''' + @schemaName + N'''' END +  CONVERT( NVARCHAR(MAX), N'
-
 		IF OBJECT_ID(''tempdb..#index_usage_stats'') IS NOT NULL DROP TABLE #index_usage_stats
 
 		SELECT * 
@@ -129,6 +139,10 @@ WHILE @countDB <= @numDB BEGIN
 			FROM sys.dm_db_index_usage_stats WITH (NOLOCK)
 			WHERE database_id = DB_ID()
 		
+		SELECT * 
+			INTO #frag FROM sys.dm_db_index_physical_stats(DB_ID(), OBJECT_ID(@tableName, ''U''), NULL, NULL, ''LIMITED'')
+			WHERE @includeFrag = 1
+
 		-- Get indexes 
 		SELECT  			
 				N''DROP INDEX '' + QUOTENAME(ix.name) + N'' ON '' + QUOTENAME(SCHEMA_NAME(o.schema_id)) + ''.'' + QUOTENAME(o.name) + CHAR(10) + N''GO'' AS DROP_INDEX_STATEMENT
@@ -231,6 +245,7 @@ WHILE @countDB <= @numDB BEGIN
 				, ius.user_updates
 				, d.name AS filegroup_desc
 				, p.data_compression_desc
+				, frag.avg_fragmentation_in_percent
 			FROM sys.indexes AS ix
 				INNER JOIN sys.objects AS o 
 					ON o.object_id = ix.object_id
@@ -247,6 +262,10 @@ WHILE @countDB <= @numDB BEGIN
 					ON ius.object_id = ix.object_id 
 						AND ius.index_id = ix.index_id
 						AND ius.database_id = DB_ID()
+				LEFT JOIN #frag AS frag
+					ON frag.object_id = ix.object_id 
+						AND frag.index_id = ix.index_id
+					
 			WHERE o.type IN (''U'', ''V'')
 				AND o.is_ms_shipped <> 1
 				AND ix.type > 0				
@@ -353,6 +372,7 @@ WHILE @countDB <= @numDB BEGIN
 				, ius2.user_updates
 				, d.name AS filegroup_desc
 				, p.data_compression_desc
+				, NULL AS avg_fragmentation_in_percent
 
 			FROM sys.xml_indexes AS xix
 				INNER JOIN sys.objects AS o 
@@ -509,6 +529,7 @@ WHILE @countDB <= @numDB BEGIN
 				, ius3.user_updates
 				, d.name AS filegroup_desc
 				, p.data_compression_desc
+				, NULL AS avg_fragmentation_in_percent
 
 			FROM sys.spatial_indexes AS six
 				INNER JOIN sys.objects AS o 
@@ -595,6 +616,7 @@ WHILE @countDB <= @numDB BEGIN
 				, NULL AS user_updates
 				, d.name AS filegroup_desc
 				, p.data_compression_desc
+				, NULL AS avg_fragmentation_in_percent
 
 			FROM sys.fulltext_indexes AS ftix
 				LEFT JOIN sys.objects AS o
@@ -630,17 +652,22 @@ WHILE @countDB <= @numDB BEGIN
 			--		, is_primary_key DESC
 			--		, index_id 
 
-	' )
+	' 
 
 	--SELECT @sqlString
 
 	INSERT INTO #result
 		EXEC sp_executesql @sqlString
-				, N'@sortInTempdb NVARCHAR(3), @dropExisting NVARCHAR(3), @online NVARCHAR(3), @maxdop TINYINT'
+				, N'@tableName SYSNAME, @schemaName SYSNAME, @sortInTempdb NVARCHAR(3), @dropExisting NVARCHAR(3), @online NVARCHAR(3), @maxdop TINYINT, @includeFrag BIT'
+				, @tableName			= @tableName
+				, @schemaName			= @schemaName
 				, @sortInTempdb			= @sortInTempdb
 				, @dropExisting			= @dropExisting
 				, @online				= @online
 				, @maxdop				= @maxdop
+				, @includeFrag			= @includeFrag
+
+				
 
 	-- Dummy Line to get statements commented out
 	--INSERT INTO #result (DROP_INDEX_STATEMENT, CREATE_INDEX_STATEMENT, dbname)
@@ -652,30 +679,31 @@ WHILE @countDB <= @numDB BEGIN
 END
 
 -- Time to retrieve all data collected
-SELECT dbname
-		, tableName
-		, index_name
-		, partition_number
-		, index_type
-		, filegroup_desc
-		, is_disabled
-		, is_primary_key
-		, is_unique
+SELECT    r.dbname
+		, r.tableName
+		, r.index_name
+		, r.partition_number
+		, r.index_type
+		, r.filegroup_desc
+		, r.is_disabled
+		, r.is_primary_key
+		, r.is_unique
 		, ISNULL([index_columns] , '-') AS [index_columns]
 		, ISNULL(included_columns, '-') AS included_columns
 		, ISNULL(filter			 , '-') AS filter
-		, row_count
-		, size_MB
-		, fill_factor
-		, reserved_MB
-		, data_compression_desc
+		, r.row_count
+		, r.size_MB
+		, r.fill_factor
+		, r.reserved_MB
+		, r.data_compression_desc
+		, ISNULL(CONVERT(VARCHAR(30), r.avg_fragmentation_in_percent), 'N/A') AS avg_fragmentation_in_percent
 		, ISNULL(user_seeks	 , 0) AS user_seeks
 		, ISNULL(user_scans	 , 0) AS user_scans
 		, ISNULL(user_lookups, 0) AS user_lookups
 		, ISNULL(user_updates, 0) AS user_updates
 		, DROP_INDEX_STATEMENT
 		, CREATE_INDEX_STATEMENT
-	FROM #result
+	FROM #result AS r
 	ORDER BY dbname
 		, tableName
 		, is_primary_key DESC
@@ -758,5 +786,6 @@ IF @includeTotals = 1 BEGIN
 		WHERE a.rows_size_MB IS NOT NULL
 			AND b.index_size_MB IS NOT NULL
 
+Error:
 END
 GO
