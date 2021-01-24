@@ -47,6 +47,11 @@ DECLARE	@dbname					sysname --= 'msdb'
 		, @includeSystemDBs		BIT		= 1
 		, @EngineEdition		INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
 
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
+
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
 	SET @dbname	= DB_NAME()

@@ -37,10 +37,13 @@ GO
 -- =============================================
 DECLARE	@loginName		SYSNAME = NULL
 
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
+
 DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
-
 DECLARE @sqlString		NVARCHAR(4000)
-
 DECLARE @groupName		SYSNAME
 		, @numGroups	INT
 		, @countGroups	INT = 1
