@@ -40,7 +40,7 @@ GO
 --				30/03/2015	RAG	- Changed the way of counting rows to consider partitioned tables 
 --				01/05/2015	RAG	- Use total_pages to calculate total size 
 --				22/03/2016	RAG	- Added indexed views to the results 
---							Cre	- ate temp table for columns using SELECT INTO as it is shorter and have the same definition 
+--									Create temp table for columns using SELECT INTO as it is shorter and have the same definition 
 --				13/04/2016	RAG	- Changed the way [IndexSpaceUsed] is calculated to display total size of non clustered indexes 
 --				14/07/2016	SZO	- Removed no longer necessary comments from the code block. 
 --				04/10/2016	RAG	- Changes due to case sensitivity (column definition) 
@@ -49,6 +49,10 @@ GO
 --				21/01/2021	RAG	- Added whether the Primary Key is clustered or not
 --				22/01/2021	RAG	- Added parameter @sortOrder with the possible values NULL (alphabetically), size (In MB desc), row_count (desc)
 --									Only aplies for @onlyTablesList = 1
+--				03/02/2021	RAG	- Added columns
+-- 									- IN_ROW_DATA_MB
+--									- LOB_DATA_MB		
+--									- ROW_OVERFLOW_DATA_MB	
 --				 
 -- ============================================= 
 GO
@@ -80,37 +84,41 @@ IF OBJECT_ID('tempdb..#resultTables') 		IS NOT NULL DROP TABLE #resultTables
 IF OBJECT_ID('tempdb..#resultColumns') 		IS NOT NULL DROP TABLE #resultColumns 
 IF OBJECT_ID('tempdb..#db_triggers') 		IS NOT NULL DROP TABLE #db_triggers 
 IF OBJECT_ID('tempdb..#index_usage_stats') 	IS NOT NULL DROP TABLE #index_usage_stats 
+IF OBJECT_ID('tempdb..#table_storage') 		IS NOT NULL DROP TABLE #table_storage
 
 CREATE TABLE #resultTables 
-	( databaseName		SYSNAME			NULL 
-	, schemaName		SYSNAME			NULL 
-	, tableName			SYSNAME			NULL 
-	, tableType			SYSNAME			NULL 
-	, row_count			BIGINT			NULL 
-	, TotalSpaceMB		DECIMAL(15,3)	NULL 
-	, DataSpaceMB		DECIMAL(15,3)	NULL 
-	, IndexSpaceMB		DECIMAL(15,3)	NULL 
-	, UnusedSpaceMB		DECIMAL(15,3)	NULL 
-	, TableTriggers		VARCHAR(500)	NULL 
-	, LastUserAccess	DATETIME		NULL 
-	, TotalUserAccess	BIGINT			NULL 
-	, LastUserLookup	DATETIME		NULL 
-	, Column_id			INT				NULL 
-	, columnName		SYSNAME			NULL 
-	, DataType			SYSNAME			NULL 
-	, Size				VARCHAR(30)		NULL 
-	, IsIdentity		VARCHAR(3)		NULL 
-	, Mandatory			VARCHAR(3)		NULL 
-	, DefaultValue		NVARCHAR(MAX)	NULL 
-	, PrimaryKey		VARCHAR(30)		NULL 
-	, ForeignKey		VARCHAR(3)		NULL 
-	, IsComputed		VARCHAR(3)		NULL 
-	, Collation			SYSNAME			NULL 
-	, [definition]		NVARCHAR(MAX)	NULL 
-	, Filestream		VARCHAR(3)		NULL 
-	, ReferencedColumn	SYSNAME			NULL 
-	, TableDescription	SQL_VARIANT		NULL 
-	, ColDescription	SQL_VARIANT		NULL) 
+	( databaseName			SYSNAME			NULL 
+	, schemaName			SYSNAME			NULL 
+	, tableName				SYSNAME			NULL 
+	, tableType				SYSNAME			NULL 
+	, row_count				BIGINT			NULL 
+	, TotalSpaceMB			DECIMAL(15,3)	NULL 
+	, DataSpaceMB			DECIMAL(15,3)	NULL 
+	, IndexSpaceMB			DECIMAL(15,3)	NULL 
+	, UnusedSpaceMB			DECIMAL(15,3)	NULL 
+	, IN_ROW_DATA_MB		DECIMAL(15,3)	NULL
+	, LOB_DATA_MB			DECIMAL(15,3)	NULL
+	, ROW_OVERFLOW_DATA_MB	DECIMAL(15,3)	NULL
+	, TableTriggers			VARCHAR(500)	NULL 
+	, LastUserAccess		DATETIME		NULL 
+	, TotalUserAccess		BIGINT			NULL 
+	, LastUserLookup		DATETIME		NULL 
+	, Column_id				INT				NULL 
+	, columnName			SYSNAME			NULL 
+	, DataType				SYSNAME			NULL 
+	, Size					VARCHAR(30)		NULL 
+	, IsIdentity			VARCHAR(3)		NULL 
+	, Mandatory				VARCHAR(3)		NULL 
+	, DefaultValue			NVARCHAR(MAX)	NULL 
+	, PrimaryKey			VARCHAR(30)		NULL 
+	, ForeignKey			VARCHAR(3)		NULL 
+	, IsComputed			VARCHAR(3)		NULL 
+	, Collation				SYSNAME			NULL 
+	, [definition]			NVARCHAR(MAX)	NULL 
+	, Filestream			VARCHAR(3)		NULL 
+	, ReferencedColumn		SYSNAME			NULL 
+	, TableDescription		SQL_VARIANT		NULL 
+	, ColDescription		SQL_VARIANT		NULL) 
 	
 SELECT *  
 	INTO #resultColumns 
@@ -125,6 +133,14 @@ CREATE TABLE #index_usage_stats
 	( object_id			INT 
 	, last_user_access	DATETIME		NULL 
 	, total_user_access	BIGINT			NULL) 
+
+CREATE TABLE #table_storage(
+object_id				INT NOT NULL
+, index_id				INT NOT NULL
+, IN_ROW_DATA_MB		DECIMAL(15,3)
+, LOB_DATA_MB			DECIMAL(15,3)
+, ROW_OVERFLOW_DATA_MB	DECIMAL(15,3)
+)
 
 DECLARE @databases TABLE  
 	( ID				INT IDENTITY 
@@ -155,6 +171,7 @@ WHILE @countDBs <= @numDBs BEGIN
 		
 		TRUNCATE TABLE #db_triggers 
 		TRUNCATE TABLE #index_usage_stats 
+		TRUNCATE TABLE #table_storage 
 
 		INSERT INTO #db_triggers 
 		SELECT parent_id 
@@ -164,21 +181,60 @@ WHILE @countDBs <= @numDBs BEGIN
 					CASE WHEN tr.is_disabled = 1 THEN '' (Disabled)'' ELSE '''' END + '')'' 
 					AS trigger_type				 
 			FROM sys.triggers AS tr 
+			WHERE OBJECT_SCHEMA_NAME(parent_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(parent_id)) 
+				AND OBJECT_NAME(parent_id) LIKE ISNULL(@tableName, OBJECT_NAME(parent_id))
 
 		;WITH t AS( 
 			SELECT object_id, [last_user_lookup] AS last_user_access , ( ius.user_scans + ius.user_seeks + ius.user_lookups ) AS total_user_access 
-				FROM sys.dm_db_index_usage_stats AS ius WHERE database_id = DB_ID() 
+				FROM sys.dm_db_index_usage_stats AS ius 
+				WHERE database_id = DB_ID() 
+					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
+					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
 			UNION ALL	 
 			SELECT object_id, [last_user_scan] , 0 -- Zero because we just have to count user access once, not for each date!! 
-				FROM sys.dm_db_index_usage_stats AS ius WHERE database_id = DB_ID() 
+				FROM sys.dm_db_index_usage_stats AS ius 
+				WHERE database_id = DB_ID() 
+					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
+					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
 			UNION ALL	 
 			SELECT object_id, [last_user_seek] , 0 -- Zero because we just have to count user access once, not for each date!! 
-				FROM sys.dm_db_index_usage_stats AS ius WHERE database_id = DB_ID() 
+				FROM sys.dm_db_index_usage_stats AS ius 
+				WHERE database_id = DB_ID() 
+					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
+					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
 		)  
 		INSERT INTO #index_usage_stats 
 			SELECT object_id, MAX(last_user_access), SUM(CONVERT(BIGINT,total_user_access))  FROM t 
 				GROUP BY object_id 
-							
+		
+		INSERT INTO #table_storage
+		SELECT object_id
+					, index_id
+					--, n_rows
+					, ISNULL([IN_ROW_DATA]		, 0)	AS [IN_ROW_DATA_MB]
+					, ISNULL([LOB_DATA]			, 0)	AS [LOB_DATA_MB]
+					, ISNULL([ROW_OVERFLOW_DATA], 0)	AS [ROW_OVERFLOW_DATA_MB]
+			FROM  ((SELECT i.object_id
+							, i.index_id
+							, a.type_desc AS allocation_unit_type_desc
+							--, SUM(p.rows) AS n_rows
+							, CONVERT(DECIMAL(15,3), SUM(a.total_pages) / 128.) AS size_mb
+						FROM sys.indexes AS i
+							INNER JOIN sys.partitions AS p 
+								ON p.object_id = i.object_id 
+									AND p.index_id = i.index_id 
+							INNER JOIN sys.allocation_units AS a  
+								ON a.container_id = p.partition_id  
+						WHERE OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(i.object_id)) 
+							AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(i.object_id))
+							AND i.index_id IN (0,1)
+						GROUP BY i.object_id
+								, i.index_id
+								, a.type_desc
+					)) AS npvt
+			PIVOT (MAX(size_mb) FOR allocation_unit_type_desc IN ([IN_ROW_DATA], [LOB_DATA], [ROW_OVERFLOW_DATA])) AS pvt
+
+
 		INSERT INTO #resultTables 
 				(databaseName 
 				, schemaName 
@@ -189,6 +245,9 @@ WHILE @countDBs <= @numDBs BEGIN
 				, DataSpaceMB 
 				, IndexSpaceMB 
 				, UnusedSpaceMB 
+				, IN_ROW_DATA_MB		
+				, LOB_DATA_MB			
+				, ROW_OVERFLOW_DATA_MB	
 				, Column_id 
 				, TableDescription 
 				, TableTriggers 
@@ -217,6 +276,11 @@ WHILE @countDBs <= @numDBs BEGIN
 				--, CONVERT( DECIMAL(9,2), (SUM(a.used_pages)  * 8) / 1024. ) AS UsedSpaceMB 
 				, CONVERT( DECIMAL(9,2), ((SUM(a.total_pages) - SUM(a.used_pages)) * 8 / 1024.) )  AS UnusedSpaceMB 
 
+				, ts.IN_ROW_DATA_MB		
+				, ts.LOB_DATA_MB			
+				, ts.ROW_OVERFLOW_DATA_MB	
+
+
 				, 0 
 				, xp.value 
 				, STUFF( (SELECT '', '' + trigger_type FROM #db_triggers AS tr WHERE tr.parent_id = i.object_id FOR XML PATH('''')  ),1, 2, '''')  AS triggers 
@@ -232,7 +296,9 @@ WHILE @countDBs <= @numDBs BEGIN
 					ON xp.major_id = i.object_id 
 						AND xp.minor_id = 0 
 						AND xp.name = ''MS_Description'' 
-
+				LEFT JOIN #table_storage as ts
+					ON ts.objecT_id = i.object_id
+						AND ts.index_id = i.index_id
 				LEFT JOIN #index_usage_stats AS ius 
 					ON ius.object_id = i.object_id  
 				OUTER APPLY (
@@ -272,6 +338,9 @@ WHILE @countDBs <= @numDBs BEGIN
 					, i.index_id 
 					, i.type_desc 
 					, ixsp.[IndexSpaceUsed] 
+					, ts.IN_ROW_DATA_MB		
+					, ts.LOB_DATA_MB			
+					, ts.ROW_OVERFLOW_DATA_MB	
 					--, p.rows 
 					, xp.value 
 					, ius.last_user_access 
@@ -411,6 +480,9 @@ IF @onlyTablesList = 1 BEGIN
 			, ISNULL(CONVERT(VARCHAR,DataSpaceMB), '') AS DataSpaceMB 
 			, ISNULL(CONVERT(VARCHAR,IndexSpaceMB), '') AS IndexSpaceMB 
 			, ISNULL(CONVERT(VARCHAR,UnusedSpaceMB), '') AS UnusedSpaceMB 
+			, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
+			, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
+			, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
 			, ISNULL(CONVERT(VARCHAR,LastUserAccess, 113), '') AS LastUserAccess 
 			, ISNULL(CONVERT(VARCHAR,TotalUserAccess), '') AS TotalUserAccess 
 			, ISNULL(TableTriggers,'') AS TableTriggers 
@@ -446,6 +518,9 @@ ELSE BEGIN
 					, DataSpaceMB 
 					, IndexSpaceMB 
 					, UnusedSpaceMB 
+					, IN_ROW_DATA_MB		
+					, LOB_DATA_MB			
+					, ROW_OVERFLOW_DATA_MB	
 					, LastUserAccess 
 					, TotalUserAccess 
 					, TableTriggers 
@@ -476,6 +551,9 @@ ELSE BEGIN
 					, DataSpaceMB 
 					, IndexSpaceMB 
 					, UnusedSpaceMB 
+					, IN_ROW_DATA_MB		
+					, LOB_DATA_MB			
+					, ROW_OVERFLOW_DATA_MB	
 					, LastUserAccess 
 					, TotalUserAccess 
 					, TableTriggers 
@@ -506,6 +584,9 @@ ELSE BEGIN
 				, ISNULL(CONVERT(VARCHAR,DataSpaceMB),'') AS DataSpaceMB 
 				, ISNULL(CONVERT(VARCHAR,IndexSpaceMB),'') AS IndexSpaceMB 
 				, ISNULL(CONVERT(VARCHAR,UnusedSpaceMB),'') AS UnusedSpaceMB 
+				, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
+				, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
+				, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
 				, ISNULL(CONVERT(VARCHAR,LastUserAccess, 113), '') AS LastUserAccess 
 				, ISNULL(CONVERT(VARCHAR,TotalUserAccess), '') AS TotalUserAccess 
 				, ISNULL(TableTriggers,'') AS TableTriggers 
