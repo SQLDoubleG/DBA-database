@@ -35,6 +35,7 @@ GO
 --				06/11/2019	RAG	Changes 
 --									- Added parameter parameter @GenerateScript to print out all statments to copy paste
 --									- Added validation for @NewDataPath and @NewLogPath
+--									- Added functionallity to enable/disable xp_cmdshell to move files
 --
 -- =============================================
 -- =============================================
@@ -60,12 +61,22 @@ GO
 DECLARE	@dbname			SYSNAME			= NULL
 DECLARE @NewDataPath 	NVARCHAR(512)	= NULL
 DECLARE @NewLogPath 	NVARCHAR(512)	= NULL
-DECLARE @GenerateScript	BIT				= 0
+DECLARE @GenerateScript	BIT				= 1
+
+--SET @NewDataPath	= CONVERT(NVARCHAR(512), SERVERPROPERTY('InstanceDefaultDataPath'))
+--SET @NewLogPath		= CONVERT(NVARCHAR(512), SERVERPROPERTY('InstanceDefaultLogPath'))
+EXEC xp_instance_regread N'HKEY_LOCAL_MACHINE',	N'Software\Microsoft\MSSQLServer\MSSQLServer',	N'DefaultData',	@NewDataPath OUTPUT;
+EXEC xp_instance_regread N'HKEY_LOCAL_MACHINE',	N'Software\Microsoft\MSSQLServer\MSSQLServer',	N'DefaultLog',	@NewLogPath OUTPUT;
 
 -- ============================================= 
 -- Do not modify below this line
 --	unless you know what you are doing!!
 -- ============================================= 
+
+DECLARE @dettach	NVARCHAR(MAX)
+DECLARE @move		NVARCHAR(MAX)
+DECLARE @attach		NVARCHAR(MAX)
+DECLARE @print		NVARCHAR(MAX)
 
 -- Add \ at the end of the path if not null
 SET @NewDataPath 	= (CASE WHEN @NewDataPath IS NOT NULL AND RIGHT(@NewDataPath, 1) <> '\' THEN @NewDataPath + '\' ELSE @NewDataPath END)
@@ -85,7 +96,7 @@ IF @NewDataPath IS NOT NULL	BEGIN
 	EXEC xp_fileexist @NewDataPath
 
 	IF NOT EXISTS (SELECT * FROM #direxist WHERE File_is_a_Directory = 1) BEGIN
-		RAISERROR ('New Data Path not valid',16,0,0) 
+		RAISERROR ('New Data Path not valid %s',16,0,@NewDataPath) 
 		RETURN		
 	END
 END
@@ -97,17 +108,34 @@ IF @NewLogPath IS NOT NULL BEGIN
 	EXEC xp_fileexist @NewLogPath
 
 	IF NOT EXISTS (SELECT * FROM #direxist WHERE File_is_a_Directory = 1) BEGIN
-		RAISERROR ('New Log Path not valid',16,0,0)
+		RAISERROR ('New Log Path not valid %s',16,0,@NewLogPath)
 		RETURN
 	END
 END
 
+DECLARE @xp_cmdshell_orig bit;
+DECLARE @reconfigure_ok bit;
+
+SELECT @xp_cmdshell_orig = CONVERT(bit, value_in_use)
+	FROM sys.configurations
+	WHERE name = 'xp_cmdshell';
+
+SELECT @reconfigure_ok = (CASE WHEN EXISTS (SELECT *
+											FROM sys.configurations
+											WHERE value <> value_in_use
+												AND NOT	(
+													name = 'min server memory (MB)'
+													AND value = 0
+													AND value_in_use = 16))	THEN 0 
+							ELSE 1
+						END)
+
 SELECT d.name AS database_name 
 	-- Dettach all user databases
 		, CONVERT(NVARCHAR(MAX), CHAR(10) + 
-			'USE [master]' + CHAR(10) + 'GO' + CHAR(10) + 
-			'ALTER DATABASE ' + QUOTENAME(name) + ' SET SINGLE_USER WITH ROLLBACK IMMEDIATE'+ CHAR(10) + 'GO' + CHAR(10) + 
-			'EXECUTE sp_detach_db ''' + name + '''' + CHAR(10) + 'GO' + CHAR(10)) AS Dettach_Database
+			'USE [master]' + CHAR(10) + 
+			'ALTER DATABASE ' + QUOTENAME(name) + ' SET SINGLE_USER WITH ROLLBACK IMMEDIATE'+ CHAR(10) + 
+			'EXECUTE sp_detach_db ''' + name + '''' + CHAR(10)) AS Dettach_Database
 	-- Move files 
 		, CONVERT(NVARCHAR(MAX), CHAR(10) + 
 				STUFF((SELECT CHAR(10) + 'EXECUTE xp_cmdshell ''move "' + mf.physical_name + '" "' 
@@ -123,10 +151,10 @@ SELECT d.name AS database_name
 						WHERE mf.database_id = d.database_id
 							AND mf.type_desc = 'LOG'
 							FOR XML PATH('')), 1, 1, '') 
-				+ CHAR(10) + 'GO' + CHAR(10))  AS Move_Files
+				+ CHAR(10))  AS Move_Files
 	-- Attach all user databases
 		, CONVERT(NVARCHAR(MAX), CHAR(10) + 
-			'USE [master]' + CHAR(10) + 'GO' + CHAR(10) + 
+			'USE [master]' + CHAR(10) + 
 			'CREATE DATABASE ' + QUOTENAME(name) + ' ON '+ CHAR(10) + CHAR(9) +
 			STUFF((SELECT CHAR(10) + CHAR(9) + ', ( FILENAME=''' + 
 														CASE WHEN @NewDataPath IS NOT NULL THEN @NewDataPath + [tempdb].[dbo].[getFileNameFromPath](physical_name)
@@ -147,19 +175,26 @@ SELECT d.name AS database_name
 						WHERE mf.database_id = d.database_id
 							AND mf.type_desc = 'LOG'
 						FOR XML PATH('')), 1, 4, '') 						
-					+ ' FOR ATTACH' + CHAR(10) + 'GO' + CHAR(10) + 			
-				'USE [master]' + CHAR(10) + 'GO' + CHAR(10) + 
-				'ALTER DATABASE ' + QUOTENAME(name) + ' SET MULTI_USER WITH ROLLBACK IMMEDIATE'+ CHAR(10) + 'GO' + CHAR(10)) AS Attach_Database
+					+ ' FOR ATTACH' + CHAR(10) + 			
+				'USE [master]' + CHAR(10) + 
+				'ALTER DATABASE ' + QUOTENAME(name) + ' SET MULTI_USER WITH ROLLBACK IMMEDIATE'+ CHAR(10)) AS Attach_Database
 	INTO #output
 	FROM sys.databases AS d 
 	WHERE database_id > 4
 		AND name = ISNULL(@dbname, name)
 
 IF @GenerateScript = 1 BEGIN
-	DECLARE @dettach	NVARCHAR(MAX)
-	DECLARE @move		NVARCHAR(MAX)
-	DECLARE @attach		NVARCHAR(MAX)
+	SET @print = '--============== SERVER ' + QUOTENAME(CONVERT(NVARCHAR(512), SERVERPROPERTY('ComputerNamePhysicalNetBios'))) + ' =======================' + CHAR(10)
+	SET @print += ':CONNECT ' + QUOTENAME(CONVERT(NVARCHAR(512), SERVERPROPERTY('ComputerNamePhysicalNetBios'))) + CHAR(10)
 
+	IF @xp_cmdshell_orig = 0 AND @reconfigure_ok = 1 BEGIN
+	   SET @print += '-- Enabling temporarily ''xp_cmdshell''' + CHAR(10)
+	   SET @print += 'EXEC sp_configure ''show advanced options'', 1;' + CHAR(10)
+	   SET @print += 'RECONFIGURE;' + CHAR(10)
+	   SET @print += 'EXEC sp_configure ''xp_cmdshell'', 1;' + CHAR(10)
+	   SET @print += 'RECONFIGURE;' + CHAR(10)
+	END
+		
 	DECLARE c CURSOR FOR 
 		SELECT database_name
 				, CONVERT(NVARCHAR(MAX), Dettach_Database)
@@ -170,15 +205,25 @@ IF @GenerateScript = 1 BEGIN
 	FETCH NEXT FROM c INTO @dbname, @dettach, @move, @attach
 	WHILE @@FETCH_STATUS = 0 BEGIN
 
-		PRINT '--============== DATABASE ' + QUOTENAME(@dbname) + ' ======================='
-		PRINT @dettach
-		PRINT ISNULL(@move, '-- Files is current location')
-		PRINT @attach
+		SET @print += '--============== DATABASE ' + QUOTENAME(@dbname) + ' =======================' + CHAR(10)
+		SET @print += @dettach 
+		SET @print += ISNULL(@move, '-- Files is current location') 
+		SET @print += @attach + CHAR(10)
+
 		FETCH NEXT FROM c INTO @dbname, @dettach, @move, @attach
 	END
-
 	CLOSE c
 	DEALLOCATE c
+
+	IF @xp_cmdshell_orig = 0 AND @reconfigure_ok = 1 BEGIN
+	   SET @print += '-- Reverting ''xp_cmdshell'', 0;' + CHAR(10)
+	   SET @print += 'EXEC sp_configure ''xp_cmdshell'', 0;' + CHAR(10)
+	   SET @print += 'RECONFIGURE;' + CHAR(10)
+	END
+
+	SET @print += 'GO' + CHAR(10)
+	PRINT @print
+
 END
 ELSE BEGIN
 	SELECT database_name

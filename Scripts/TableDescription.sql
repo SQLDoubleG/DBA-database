@@ -53,6 +53,11 @@ GO
 -- 									- IN_ROW_DATA_MB
 --									- LOB_DATA_MB		
 --									- ROW_OVERFLOW_DATA_MB	
+--				17/02/2021	RAG	- Fixed collation issues
+--				11/04/2021	RAG	- Changes
+--                                  - Split Last User Access into Last Write / Last Read
+--                                  - Split Total User Access into User Writes / User Reads
+----------------------------------------------------------------------------------------
 --				 
 -- ============================================= 
 GO
@@ -100,8 +105,10 @@ CREATE TABLE #resultTables
 	, LOB_DATA_MB			DECIMAL(15,3)	NULL
 	, ROW_OVERFLOW_DATA_MB	DECIMAL(15,3)	NULL
 	, TableTriggers			VARCHAR(500)	NULL 
-	, LastUserAccess		DATETIME		NULL 
-	, TotalUserAccess		BIGINT			NULL 
+	, LastUserRead			DATETIME		NULL 
+	, LastUserUpdate		DATETIME		NULL 
+	, UserReads				BIGINT			NULL 
+	, UserUpdates			BIGINT			NULL 
 	, LastUserLookup		DATETIME		NULL 
 	, Column_id				INT				NULL 
 	, columnName			SYSNAME			NULL 
@@ -125,21 +132,28 @@ SELECT *
 	FROM #resultTables 
 	WHERE 1=0 
 
-CREATE TABLE #db_triggers 
-	( parent_id			INT 
-	, trigger_type		NVARCHAR(4000)) 
+CREATE TABLE #db_triggers ( 
+parent_id			INT 
+, trigger_type		NVARCHAR(4000)) 
 	
-CREATE TABLE #index_usage_stats 
-	( object_id			INT 
-	, last_user_access	DATETIME		NULL 
-	, total_user_access	BIGINT			NULL) 
+CREATE TABLE #index_usage_stats ( 
+object_id			INT 
+, last_user_read	DATETIME	NULL
+, last_user_update	DATETIME	NULL
+, user_reads		BIGINT		NULL
+, user_updates		BIGINT		NULL) 
 
 CREATE TABLE #table_storage(
-object_id				INT NOT NULL
-, index_id				INT NOT NULL
-, IN_ROW_DATA_MB		DECIMAL(15,3)
-, LOB_DATA_MB			DECIMAL(15,3)
-, ROW_OVERFLOW_DATA_MB	DECIMAL(15,3)
+[object_id]					INT NOT NULL
+, [index_id]				INT NOT NULL
+, [row_count]				BIGINT NOT NULL
+, [TotalSpaceUsed]			DECIMAL(15,3)
+, [DataSpaceUsed]			DECIMAL(15,3)
+, [IndexSpaceUsed]			DECIMAL(15,3)
+, [UnusedSpace]				DECIMAL(15,3)
+, [IN_ROW_DATA_MB]			DECIMAL(15,3)
+, [LOB_DATA_MB]				DECIMAL(15,3)
+, [ROW_OVERFLOW_DATA_MB]	DECIMAL(15,3)
 )
 
 DECLARE @databases TABLE  
@@ -168,6 +182,7 @@ WHILE @countDBs <= @numDBs BEGIN
 
 	SET @sqlstring = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
 		+ CONVERT(NVARCHAR(MAX), N'
+		SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 		
 		TRUNCATE TABLE #db_triggers 
 		TRUNCATE TABLE #index_usage_stats 
@@ -181,43 +196,51 @@ WHILE @countDBs <= @numDBs BEGIN
 					CASE WHEN tr.is_disabled = 1 THEN '' (Disabled)'' ELSE '''' END + '')'' 
 					AS trigger_type				 
 			FROM sys.triggers AS tr 
-			WHERE OBJECT_SCHEMA_NAME(parent_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(parent_id)) 
-				AND OBJECT_NAME(parent_id) LIKE ISNULL(@tableName, OBJECT_NAME(parent_id))
+			WHERE OBJECT_SCHEMA_NAME(parent_id) = ISNULL(@schemaName COLLATE DATABASE_DEFAULT, OBJECT_SCHEMA_NAME(parent_id)) 
+				AND OBJECT_NAME(parent_id) LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, OBJECT_NAME(parent_id))
 
-		;WITH t AS( 
-			SELECT object_id, [last_user_lookup] AS last_user_access , ( ius.user_scans + ius.user_seeks + ius.user_lookups ) AS total_user_access 
-				FROM sys.dm_db_index_usage_stats AS ius 
-				WHERE database_id = DB_ID() 
-					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
-					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
-			UNION ALL	 
-			SELECT object_id, [last_user_scan] , 0 -- Zero because we just have to count user access once, not for each date!! 
-				FROM sys.dm_db_index_usage_stats AS ius 
-				WHERE database_id = DB_ID() 
-					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
-					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
-			UNION ALL	 
-			SELECT object_id, [last_user_seek] , 0 -- Zero because we just have to count user access once, not for each date!! 
-				FROM sys.dm_db_index_usage_stats AS ius 
-				WHERE database_id = DB_ID() 
-					AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(ius.object_id)) 
-					AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(ius.object_id))
-		)  
 		INSERT INTO #index_usage_stats 
-			SELECT object_id, MAX(last_user_access), SUM(CONVERT(BIGINT,total_user_access))  FROM t 
-				GROUP BY object_id 
-		
+			SELECT object_id
+					, MAX(last_user_read) AS last_user_read
+					, MAX(last_user_update) AS last_user_update
+					, SUM(user_reads) AS user_reads
+					, SUM(user_updates) AS user_updates
+			FROM (
+				SELECT object_id
+					, ( ius.user_scans + ius.user_seeks + ius.user_lookups ) AS user_reads
+					, ius.user_updates
+					, (SELECT MAX(v) FROM (VALUES([last_user_lookup]), ([last_user_scan]), ([last_user_seek])) t(v)) AS last_user_read
+					, ISNULL(ius.last_user_update, 0) AS last_user_update
+				FROM sys.dm_db_index_usage_stats AS ius 
+							WHERE database_id = DB_ID() 
+								AND OBJECT_SCHEMA_NAME(ius.object_id) = ISNULL(@schemaName COLLATE DATABASE_DEFAULT, OBJECT_SCHEMA_NAME(ius.object_id)) 
+								AND OBJECT_NAME(ius.object_id) LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, OBJECT_NAME(ius.object_id)) 
+			) AS t
+			GROUP BY object_id
+
 		INSERT INTO #table_storage
 		SELECT object_id
 					, index_id
-					--, n_rows
-					, ISNULL([IN_ROW_DATA]		, 0)	AS [IN_ROW_DATA_MB]
-					, ISNULL([LOB_DATA]			, 0)	AS [LOB_DATA_MB]
-					, ISNULL([ROW_OVERFLOW_DATA], 0)	AS [ROW_OVERFLOW_DATA_MB]
-			FROM  ((SELECT i.object_id
+					, SUM(row_count)						AS row_count
+					, SUM([TotalSpaceUsed])					AS [TotalSpaceUsed]
+					, SUM([DataSpaceUsed])					AS [DataSpaceUsed]
+					, SUM([IndexSpaceUsed])					AS [IndexSpaceUsed]
+					, SUM([UnusedSpace])					AS [UnusedSpace]
+					, ISNULL(MAX([IN_ROW_DATA])		, 0)	AS [IN_ROW_DATA_MB]
+					, ISNULL(MAX([LOB_DATA])		, 0)	AS [LOB_DATA_MB]
+					, ISNULL(MAX([ROW_OVERFLOW_DATA]), 0)	AS [ROW_OVERFLOW_DATA_MB]
+			FROM  (
+				
+				(SELECT i.object_id
 							, i.index_id
 							, a.type_desc AS allocation_unit_type_desc
-							--, SUM(p.rows) AS n_rows
+							, SUM(CASE WHEN a.type = 1 THEN p.rows ELSE 0 END) AS row_count
+							, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(a.total_pages)) / 1024 , 0 ) ) AS [TotalSpaceUsed] 
+							, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(               CASE WHEN a.type <> 1 THEN a.used_pages WHEN p.index_id < 2 THEN a.data_pages ELSE 0 END)) / 1024 , 0 ) ) AS [DataSpaceUsed] 
+							-- wrong calculation, use OUTER APPLY 
+							--, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(a.used_pages - CASE WHEN a.type <> 1 THEN a.used_pages WHEN p.index_id < 2 THEN a.data_pages ELSE 0 END)) / 1024 , 0 ) ) AS [IndexSpaceUsed] 
+							, CONVERT( DECIMAL(15,3), ixsp.[IndexSpaceUsed] / 1024. ) AS [IndexSpaceUsed] 
+							, CONVERT( DECIMAL(9,2), ((SUM(a.total_pages) - SUM(a.used_pages)) * 8 / 1024.) )  AS UnusedSpace 
 							, CONVERT(DECIMAL(15,3), SUM(a.total_pages) / 128.) AS size_mb
 						FROM sys.indexes AS i
 							INNER JOIN sys.partitions AS p 
@@ -225,14 +248,44 @@ WHILE @countDBs <= @numDBs BEGIN
 									AND p.index_id = i.index_id 
 							INNER JOIN sys.allocation_units AS a  
 								ON a.container_id = p.partition_id  
-						WHERE OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(i.object_id)) 
-							AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(i.object_id))
+							OUTER APPLY (
+								SELECT  
+							 
+										CASE WHEN (tbl.is_memory_optimized=0) THEN  
+											ISNULL(( 
+											(SELECT SUM (used_page_count) FROM sys.dm_db_partition_stats ps WHERE ps.object_id = tbl.object_id) 
+											+ ( CASE (SELECT count(*) FROM sys.internal_tables WHERE parent_id = tbl.object_id AND internal_type IN (202,204,207,211,212,213,214,215,216,221,222)) 
+												WHEN 0 THEN 0 
+												ELSE ( 
+													SELECT sum(p.used_page_count) 
+													FROM sys.dm_db_partition_stats p, sys.internal_tables it 
+													WHERE it.parent_id = tbl.object_id AND it.internal_type IN (202,204,207,211,212,213,214,215,216,221,222) AND p.object_id = it.object_id) 
+												END ) 
+											- (SELECT SUM (CASE WHEN(index_id < 2) THEN (in_row_data_page_count + lob_used_page_count + row_overflow_used_page_count) ELSE 0 END) 
+												FROM sys.dm_db_partition_stats WHERE object_id = tbl.object_id) 
+											) * 8, 0.0) 
+						 
+										ELSE 
+											ISNULL((SELECT (tms.[memory_used_by_indexes_kb]) 
+											FROM [sys].[dm_db_xtp_table_memory_stats] tms 
+											WHERE tms.object_id = tbl.object_id), 0.0) 
+										END AS [IndexSpaceUsed]
+									FROM sys.tables AS tbl 
+									WHERE tbl.object_id = i.object_id 
+							) AS ixsp  
+						WHERE OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName COLLATE DATABASE_DEFAULT, OBJECT_SCHEMA_NAME(i.object_id)) 
+							AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, OBJECT_NAME(i.object_id))
 							AND i.index_id IN (0,1)
 						GROUP BY i.object_id
 								, i.index_id
 								, a.type_desc
-					)) AS npvt
+								, ixsp.[IndexSpaceUsed]
+					)
+			
+			) AS npvt
 			PIVOT (MAX(size_mb) FOR allocation_unit_type_desc IN ([IN_ROW_DATA], [LOB_DATA], [ROW_OVERFLOW_DATA])) AS pvt
+		GROUP BY object_id
+					, index_id
 
 
 		INSERT INTO #resultTables 
@@ -251,8 +304,10 @@ WHILE @countDBs <= @numDBs BEGIN
 				, Column_id 
 				, TableDescription 
 				, TableTriggers 
-				, LastUserAccess 
-				, TotalUserAccess) 
+				, LastUserRead		
+				, LastUserUpdate	
+				, UserReads	
+				, UserUpdates) 
 		SELECT DB_NAME() 
 				, OBJECT_SCHEMA_NAME(i.object_id)  
 				, OBJECT_NAME(i.object_id)  
@@ -261,37 +316,22 @@ WHILE @countDBs <= @numDBs BEGIN
 						ELSE i.type_desc 
 					END AS tableType  
 
-					
-				, SUM(CASE WHEN a.type = 1 THEN p.rows ELSE 0 END)  
-				, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(a.total_pages)) / 1024 , 0 ) ) AS [TotalSpaceUsed] 
-				, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(               CASE WHEN a.type <> 1 THEN a.used_pages WHEN p.index_id < 2 THEN a.data_pages ELSE 0 END)) / 1024 , 0 ) ) AS [DataSpaceUsed] 
-					
-				-- wrong calculation, use OUTER APPLY 
-				--, CONVERT( DECIMAL(15,3), ISNULL( (8.000000 * SUM(a.used_pages - CASE WHEN a.type <> 1 THEN a.used_pages WHEN p.index_id < 2 THEN a.data_pages ELSE 0 END)) / 1024 , 0 ) ) AS [IndexSpaceUsed] 
-				, CONVERT( DECIMAL(15,3), ixsp.[IndexSpaceUsed] / 1024. ) AS [IndexSpaceUsed] 
-
-
-				--, CONVERT( DECIMAL(9,2), (SUM(a.total_pages) * 8) / 1024. ) AS TotalSpaceMB 
-				--, CONVERT( DECIMAL(9,2), (SUM(a.data_pages) * 8) / 1024. ) AS DataSpaceMB 
-				--, CONVERT( DECIMAL(9,2), (SUM(a.used_pages)  * 8) / 1024. ) AS UsedSpaceMB 
-				, CONVERT( DECIMAL(9,2), ((SUM(a.total_pages) - SUM(a.used_pages)) * 8 / 1024.) )  AS UnusedSpaceMB 
-
+				, ts.row_count
+				, ts.TotalSpaceUsed
+				, ts.DataSpaceUsed
+				, ts.IndexSpaceUsed
+				, ts.UnusedSpace
 				, ts.IN_ROW_DATA_MB		
 				, ts.LOB_DATA_MB			
 				, ts.ROW_OVERFLOW_DATA_MB	
-
-
-				, 0 
-				, xp.value 
-				, STUFF( (SELECT '', '' + trigger_type FROM #db_triggers AS tr WHERE tr.parent_id = i.object_id FOR XML PATH('''')  ),1, 2, '''')  AS triggers 
-				, ius.last_user_access 
-				, total_user_access 
+				, 0 AS [Column_id]
+				, xp.value AS [TableDescription]
+				, STUFF( (SELECT '', '' + trigger_type FROM #db_triggers AS tr WHERE tr.parent_id = i.object_id FOR XML PATH('''')  ),1, 2, '''')  AS [triggers]
+				, ius.last_user_read 
+				, ius.last_user_update 
+				, user_reads
+				, user_updates
 			FROM sys.indexes AS i  
-				INNER JOIN sys.partitions AS p 
-					ON p.object_id = i.object_id 
-						AND p.index_id = i.index_id 
-				INNER JOIN sys.allocation_units AS a  
-					ON a.container_id = p.partition_id  
 				LEFT JOIN sys.extended_properties AS xp 
 					ON xp.major_id = i.object_id 
 						AND xp.minor_id = 0 
@@ -301,52 +341,12 @@ WHILE @countDBs <= @numDBs BEGIN
 						AND ts.index_id = i.index_id
 				LEFT JOIN #index_usage_stats AS ius 
 					ON ius.object_id = i.object_id  
-				OUTER APPLY (
-					SELECT  
-							') +  CASE WHEN @numericVersion > 11 THEN CONVERT(NVARCHAR(MAX), ' 
-							CASE WHEN (tbl.is_memory_optimized=0) THEN ') ELSE CONVERT(NVARCHAR(MAX),'') END  
-						+ CONVERT(NVARCHAR(MAX), ' 
-								ISNULL(( 
-								(SELECT SUM (used_page_count) FROM sys.dm_db_partition_stats ps WHERE ps.object_id = tbl.object_id) 
-								+ ( CASE (SELECT count(*) FROM sys.internal_tables WHERE parent_id = tbl.object_id AND internal_type IN (202,204,207,211,212,213,214,215,216,221,222)) 
-									WHEN 0 THEN 0 
-									ELSE ( 
-										SELECT sum(p.used_page_count) 
-										FROM sys.dm_db_partition_stats p, sys.internal_tables it 
-										WHERE it.parent_id = tbl.object_id AND it.internal_type IN (202,204,207,211,212,213,214,215,216,221,222) AND p.object_id = it.object_id) 
-									END ) 
-								- (SELECT SUM (CASE WHEN(index_id < 2) THEN (in_row_data_page_count + lob_used_page_count + row_overflow_used_page_count) ELSE 0 END) 
-									FROM sys.dm_db_partition_stats WHERE object_id = tbl.object_id) 
-								) * 8, 0.0) 
-						') +  CASE WHEN @numericVersion > 11 THEN CONVERT(NVARCHAR(MAX),' 
-							else 
-								isnull((select (tms.[memory_used_by_indexes_kb]) 
-								from [sys].[dm_db_xtp_table_memory_stats] tms 
-								where tms.object_id = tbl.object_id), 0.0) 
-							end') ELSE CONVERT(NVARCHAR(MAX),'') END  
-						+ CONVERT(NVARCHAR(MAX), ' 
-							AS [IndexSpaceUsed]
-					FROM sys.tables AS tbl 
-					WHERE tbl.object_id = i.object_id 
-				) AS ixsp  
 			WHERE OBJECTPROPERTYEX(i.object_id, ''IsMSShipped'') = 0 
 				AND i.index_id IN (0, 1) -- Heap or Clustered 
-				AND OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(i.object_id)) 
-				AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(i.object_id)) 
-			GROUP BY i.object_id 
-					--, t.name 
-					, i.index_id 
-					, i.type_desc 
-					, ixsp.[IndexSpaceUsed] 
-					, ts.IN_ROW_DATA_MB		
-					, ts.LOB_DATA_MB			
-					, ts.ROW_OVERFLOW_DATA_MB	
-					--, p.rows 
-					, xp.value 
-					, ius.last_user_access 
-					, total_user_access 
+				AND OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName COLLATE DATABASE_DEFAULT, OBJECT_SCHEMA_NAME(i.object_id))
+				AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, OBJECT_NAME(i.object_id))
 	') 
-	--SELECT @sqlstring
+	-- SELECT @sqlstring
 	-- Insert all tables with their descriptions 
 	EXECUTE sp_executesql 
 				@stmt = @sqlstring
@@ -452,9 +452,9 @@ WHILE @countDBs <= @numDBs BEGIN
 							AND xp.minor_id = c.column_id  
 							AND xp.name = ''MS_Description'' 
 				WHERE OBJECTPROPERTYEX(i.object_id, ''IsMSShipped'') = 0 
-					AND OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName, OBJECT_SCHEMA_NAME(i.object_id)) 
-					AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName, OBJECT_NAME(i.object_id)) 
-					AND c.name LIKE ISNULL(@columnName, c.name) 
+					AND OBJECT_SCHEMA_NAME(i.object_id) = ISNULL(@schemaName COLLATE DATABASE_DEFAULT, OBJECT_SCHEMA_NAME(i.object_id)) 
+					AND OBJECT_NAME(i.object_id) LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, OBJECT_NAME(i.object_id)) 
+					AND c.name LIKE ISNULL(@columnName COLLATE DATABASE_DEFAULT, c.name) 
 		')
 		PRINT @sqlstring 
 		-- Insert all Columns for all tables			 
@@ -483,8 +483,10 @@ IF @onlyTablesList = 1 BEGIN
 			, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
 			, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
 			, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
-			, ISNULL(CONVERT(VARCHAR,LastUserAccess, 113), '') AS LastUserAccess 
-			, ISNULL(CONVERT(VARCHAR,TotalUserAccess), '') AS TotalUserAccess 
+			, ISNULL(CONVERT(VARCHAR,LastUserRead, 113), '') AS LastUserRead 
+			, ISNULL(CONVERT(VARCHAR,LastUserUpdate, 113), '') AS LastUserUpdate 
+			, ISNULL(CONVERT(VARCHAR,UserReads), '') AS UserReads
+			, ISNULL(CONVERT(VARCHAR,UserUpdates), '') AS UserUpdates
 			, ISNULL(TableTriggers,'') AS TableTriggers 
 			, ISNULL(TableDescription,'') AS TableDescription 
 		FROM #resultTables  AS r
@@ -521,8 +523,10 @@ ELSE BEGIN
 					, IN_ROW_DATA_MB		
 					, LOB_DATA_MB			
 					, ROW_OVERFLOW_DATA_MB	
-					, LastUserAccess 
-					, TotalUserAccess 
+					, UserReads
+					, UserUpdates
+					, LastUserRead
+					, LastUserUpdate
 					, TableTriggers 
 					, columnName 
 					, Column_id 
@@ -554,8 +558,10 @@ ELSE BEGIN
 					, IN_ROW_DATA_MB		
 					, LOB_DATA_MB			
 					, ROW_OVERFLOW_DATA_MB	
-					, LastUserAccess 
-					, TotalUserAccess 
+					, UserReads
+					, UserUpdates
+					, LastUserRead
+					, LastUserUpdate
 					, TableTriggers 
 					, columnName 
 					, Column_id 
@@ -587,8 +593,10 @@ ELSE BEGIN
 				, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
 				, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
 				, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
-				, ISNULL(CONVERT(VARCHAR,LastUserAccess, 113), '') AS LastUserAccess 
-				, ISNULL(CONVERT(VARCHAR,TotalUserAccess), '') AS TotalUserAccess 
+				, ISNULL(CONVERT(VARCHAR,LastUserRead, 113), '') AS LastUserRead 
+				, ISNULL(CONVERT(VARCHAR,LastUserUpdate, 113), '') AS LastUserUpdate 
+				, ISNULL(CONVERT(VARCHAR,UserReads), '') AS UserReads
+				, ISNULL(CONVERT(VARCHAR,UserUpdates), '') AS UserUpdates
 				, ISNULL(TableTriggers,'') AS TableTriggers 
 				, ISNULL(columnName,'') AS columnName 
 				, ISNULL(DataType,'') AS DataType 

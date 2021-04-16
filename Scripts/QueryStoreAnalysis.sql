@@ -25,20 +25,36 @@ GO
 --				- @dateFro
 --				- @dateTo		
 --				- @topNrows	
+--				- @objectName 
+--				- @queryId	
+--				- @planId	
 --				- @OrderBy	
 --
 -- Log History:	
 --				11/11/2019  RAG - Created
 --				18/11/2019  RAG - Added average wait times per wait type
 --				24/01/2021  RAG - Added functionality to go through all databaes
+--				05/03/2021  RAG - Added parameter @objectName, which will accept values in the format "schema.object_name" 
+--				26/03/2021  RAG - Changes:
+--									- Added parameter @queryId, to display only one query
+--									- Added parameter @planId, to display only one plan
+--									- Changed values for sorting on averages to simplify
+--				30/03/2021  RAG - Changes in the behaviour:
+--									- When passing either @objectName, @queryId or @planId, it will display data per interval so 
+--										you can see how the query is performing through the selected period
+--				13/04/2021  RAG - @objectId will be calculated from @objectName in advance
 --
 -- =============================================
+SET NOCOUNT ON
 
-DECLARE @dbname	    SYSNAME		= NULL
-DECLARE @dateFrom	DATETIME2	= DATEADD(DAY, -8, GETDATE())
-DECLARE @dateTo		DATETIME2	= GETDATE()
-DECLARE @topNrows	INT
-DECLARE @OrderBy	SYSNAME = 'total_cpu'
+DECLARE @dbname	    SYSNAME			= NULL
+DECLARE @dateFrom	DATETIME2		= DATEADD(DAY, -8, GETDATE())
+DECLARE @dateTo		DATETIME2		= GETDATE()
+DECLARE @topNrows	INT				= 10
+DECLARE @objectName NVARCHAR(257)	= NULL
+DECLARE @queryId	INT				= NULL
+DECLARE @planId		INT				= NULL
+DECLARE @OrderBy	SYSNAME			= 'total_cpu'
 
 -- ============================================= 
 -- Do not modify below this line
@@ -106,16 +122,19 @@ CREATE TABLE #output(
 	, [percentge_reads]						DECIMAL(5,2) NULL
 	, [percentge_writes]					DECIMAL(5,2) NULL
 	, [percentage_query_wait_time_ms]		DECIMAL(5,2) NULL
-	, [query_sql_text]						XML NULL
-	, [query_plan]							XML NULL
+	, [query_sql_text]						NVARCHAR(MAX) NULL
+	, [query_plan]							NVARCHAR(MAX) NULL
 )
-
-
-
 
 SET @dateTo		= ISNULL(@dateTo, DATEADD(DAY, 7, @dateFrom)) -- one week
 SET @topNrows	= ISNULL(@topNrows, 10)
 SET @OrderBy	= ISNULL(@OrderBy, 'total_cpu')
+
+-- Get everything if we want just an object
+SET @topNrows	= CASE WHEN COALESCE(@objectName, CONVERT(VARCHAR(30), @queryId), CONVERT(VARCHAR(30), @planId)) 
+                        IS NOT NULL THEN 2140000000 
+                        ELSE @topNrows 
+                    END
 
 DECLARE @EngineEdition	INT	= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
 DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
@@ -133,7 +152,7 @@ INSERT INTO @databases
 		ORDER BY name ASC		 
 SET @numDBs = @@ROWCOUNT 
 
-IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu_time', 'avg_logical_io_reads', 'avg_logical_io_writes'
+IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu', 'avg_reads', 'avg_writes'
 					, 'total_duration', 'total_cpu', 'total_reads', 'total_writes') BEGIN 
 	RAISERROR ('The possible values for @OrderBy are the following:
 - total_executions
@@ -147,7 +166,7 @@ IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu_time', 'avg_log
 - total_writes		
 
 Please Choose on of them and run it again', 16, 0) WITH NOWAIT;
-	--GOTO OnError
+	GOTO OnError
 END
 
 -- Get all the intervals within the DateFrom and DateTo specified
@@ -249,12 +268,63 @@ SET @countDBs = 1; -- Reset for next loops
 
 -- Get the final output for the period defined.
 SET @sql = 'USE [?]
+
+-- Get some data before for performance
+DECLARE @objectId INT = OBJECT_ID(@objectName)
+
+SELECT TOP (@topNrows) 
+		CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
+		, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
+		, rst.plan_id
+		, q.query_id
+		, q.query_text_id
+		, q.object_id
+		, SUM(rst.count_executions) AS total_executions
+		-- averages
+		, AVG(rst.avg_duration) AS avg_duration		   
+		, AVG(rst.avg_cpu_time) AS avg_cpu_time		   
+		, AVG(rst.avg_logical_io_reads) AS avg_logical_io_reads 
+		, AVG(rst.avg_logical_io_writes) AS avg_logical_io_writes
+		-- totals
+		, SUM(rst.count_executions * rst.avg_duration)			AS total_duration
+		, SUM(rst.count_executions * rst.avg_cpu_time)			AS total_cpu
+		, SUM(rst.count_executions * rst.avg_logical_io_reads)	AS total_reads
+		, SUM(rst.count_executions * rst.avg_logical_io_writes) AS total_writes
+		--, 		* 
+INTO #t
+	FROM sys.query_store_runtime_stats AS rst
+		INNER JOIN sys.query_store_plan AS qp
+			ON qp.plan_id = rst.plan_id
+		INNER JOIN sys.query_store_query AS q
+			ON q.query_id = qp.query_id
+		INNER JOIN #intervals AS rsti
+			ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id 
+				AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
+	WHERE q.object_id = ISNULL(@objectId, q.object_id) 
+		AND q.query_id = ISNULL(@queryId, qp.query_id)
+		AND rst.plan_id = ISNULL(@planId, rst.plan_id)
+	GROUP BY rst.plan_id
+			, q.query_id
+			, q.query_text_id
+			, q.object_id
+			, CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN q.object_id ELSE rsti.runtime_stats_interval_id END
+	ORDER BY  CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN q.object_id ELSE rsti.runtime_stats_interval_id END
+			, CASE WHEN @OrderBy = ''total_executions''	COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_duration''		COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_duration) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_cpu_time''		COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_cpu_time) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_reads''		COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_logical_io_reads) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_writes''		COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_logical_io_writes) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_duration''	COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_duration) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_cpu''		COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_cpu_time) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_reads''		COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_logical_io_reads) ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_writes''		COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_logical_io_writes) ELSE NULL END DESC
+
 SELECT DB_NAME() AS database_name
 		, rst.start_time
 		, rst.end_time
 		, qp.query_id
 		, rst.plan_id
-		, ISNULL(OBJECT_SCHEMA_NAME(q.object_id) + ''.'' + OBJECT_NAME(q.object_id), ''-'') AS object_name
+		, ISNULL(OBJECT_SCHEMA_NAME(rst.object_id) + ''.'' + OBJECT_NAME(rst.object_id), ''-'') AS object_name
 		, rst.total_executions
 	
 	-- totals
@@ -280,65 +350,31 @@ SELECT DB_NAME() AS database_name
 		, ISNULL(CONVERT(DECIMAL(5,2), w.total_query_wait_time_ms * 100. / NULLIF(tw.total_query_wait_time_ms, 0)), 0) AS percentage_query_wait_time_ms
 
 	-- Query Text and Plan 
-		--, qt.query_sql_text
-		--, qp.query_plan
-		, ISNULL(TRY_CONVERT(XML, ''<!--'' + REPLACE(qt.query_sql_text, ''--'', ''/* this line was commented out */'') + ''-->''), qt.query_sql_text) AS query_sql_text
-		, ISNULL(TRY_CONVERT(XML, qp.query_plan), qp.query_plan) AS query_plan
+		, qt.query_sql_text
+		, qp.query_plan
+		--, ISNULL(TRY_CONVERT(XML, ''<!--'' + REPLACE(qt.query_sql_text, ''--'', ''/* this line was commented out */'') + ''-->''), qt.query_sql_text) AS query_sql_text
+		--, ISNULL(TRY_CONVERT(XML, qp.query_plan), qp.query_plan) AS query_plan
 
-	FROM (
-		SELECT TOP (@topNrows) 
-				CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
-				, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
-				, rst.plan_id
-				, SUM(rst.count_executions) AS total_executions
-				-- averages
-				, AVG(rst.avg_duration) AS avg_duration		   
-				, AVG(rst.avg_cpu_time) AS avg_cpu_time		   
-				, AVG(rst.avg_logical_io_reads) AS avg_logical_io_reads 
-				, AVG(rst.avg_logical_io_writes) AS avg_logical_io_writes
-				-- totals
-				, SUM(rst.count_executions * rst.avg_duration)			AS total_duration
-				, SUM(rst.count_executions * rst.avg_cpu_time)			AS total_cpu
-				, SUM(rst.count_executions * rst.avg_logical_io_reads)	AS total_reads
-				, SUM(rst.count_executions * rst.avg_logical_io_writes) AS total_writes
-				--, 		* 
-		-- SELECT *
-			FROM sys.query_store_runtime_stats AS rst
-			INNER JOIN #intervals AS rsti
-				ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id 
-					AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
-			GROUP BY rst.plan_id
-			ORDER BY  CASE WHEN @OrderBy = ''total_executions''			COLLATE DATABASE_DEFAULT THEN SUM(rst.count_executions) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''avg_duration''				COLLATE DATABASE_DEFAULT THEN AVG(rst.avg_duration) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''avg_cpu_time''				COLLATE DATABASE_DEFAULT THEN AVG(rst.avg_cpu_time) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''avg_logical_io_reads''		COLLATE DATABASE_DEFAULT THEN AVG(rst.avg_logical_io_reads) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''avg_logical_io_writes''	COLLATE DATABASE_DEFAULT THEN AVG(rst.avg_logical_io_writes) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''total_duration''			COLLATE DATABASE_DEFAULT THEN SUM(rst.count_executions * rst.avg_duration) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''total_cpu''				COLLATE DATABASE_DEFAULT THEN SUM(rst.count_executions * rst.avg_cpu_time) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''total_reads''				COLLATE DATABASE_DEFAULT THEN SUM(rst.count_executions * rst.avg_logical_io_reads) ELSE NULL END DESC
-					, CASE WHEN @OrderBy = ''total_writes''				COLLATE DATABASE_DEFAULT THEN SUM(rst.count_executions * rst.avg_logical_io_writes) ELSE NULL END DESC
-		) AS rst
+	FROM #t AS rst
 		INNER JOIN sys.query_store_plan AS qp
 			ON qp.plan_id = rst.plan_id
-		INNER JOIN sys.query_store_query AS q
-			ON q.query_id = qp.query_id
 		INNER JOIN sys.query_store_query_text AS qt
-			ON qt.query_text_id = q.query_text_id 
+			ON qt.query_text_id = rst.query_text_id 
 		LEFT JOIN #waits AS w
 			ON w.plan_id = qp.plan_id
 				AND w.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
 		OUTER APPLY (SELECT * FROM #totals WHERE #totals.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS t
 		OUTER APPLY (SELECT SUM(total_query_wait_time_ms) AS total_query_wait_time_ms FROM #waits WHERE #waits.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS tw
-	--WHERE rst.plan_id = 1999
-	ORDER BY CASE WHEN @OrderBy = ''total_executions''			COLLATE DATABASE_DEFAULT THEN rst.total_executions ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_duration''				COLLATE DATABASE_DEFAULT THEN rst.avg_duration ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_cpu_time''				COLLATE DATABASE_DEFAULT THEN rst.avg_cpu_time ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_logical_io_reads''		COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_reads ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_logical_io_writes''	COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_writes ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_duration''			COLLATE DATABASE_DEFAULT THEN rst.total_duration	ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_cpu''				COLLATE DATABASE_DEFAULT THEN rst.total_cpu ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_reads''				COLLATE DATABASE_DEFAULT THEN rst.total_reads ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_writes''				COLLATE DATABASE_DEFAULT THEN rst.total_writes ELSE NULL END DESC
+	ORDER BY  CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN NULL ELSE rst.start_time END
+			, CASE WHEN @OrderBy = ''total_executions''	COLLATE DATABASE_DEFAULT THEN rst.total_executions ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_duration''		COLLATE DATABASE_DEFAULT THEN rst.avg_duration ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_cpu''			COLLATE DATABASE_DEFAULT THEN rst.avg_cpu_time ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_reads''		COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_reads ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''avg_writes''		COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_writes ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_duration''	COLLATE DATABASE_DEFAULT THEN rst.total_duration	ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_cpu''		COLLATE DATABASE_DEFAULT THEN rst.total_cpu ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_reads''		COLLATE DATABASE_DEFAULT THEN rst.total_reads ELSE NULL END DESC
+			, CASE WHEN @OrderBy = ''total_writes''		COLLATE DATABASE_DEFAULT THEN rst.total_writes ELSE NULL END DESC
 '
 
 WHILE @countDBs <= @numDBs BEGIN 
@@ -351,17 +387,48 @@ WHILE @countDBs <= @numDBs BEGIN
 						, [percentge_duration], [percentge_cpu], [percentge_reads], [percentge_writes], [percentage_query_wait_time_ms]
 						, [query_sql_text], [query_plan])
 	EXECUTE sp_executesql 
-		@sqlstmt	= @sqlstringdb
-		, @params	= N'@topNrows INT, @OrderBy SYSNAME'
-		, @topNrows = @topNrows 
-		, @OrderBy	= @OrderBy
+		@sqlstmt		= @sqlstringdb
+		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @objectName NVARCHAR(257), @queryId INT, @planId INT'
+		, @topNrows		= @topNrows 
+		, @OrderBy		= @OrderBy
+		, @objectName	= @objectName
+		, @queryId		= @queryId
+		, @planId		= @planId
         
     SET @countDBs = @countDBs + 1;
 END;
 
-SELECT * 
+SELECT [database_name]
+		, [start_time]
+		, [end_time]
+		, [query_id]
+		, [plan_id]
+		, [object_name]
+		, [total_executions]
+		, [avg_duration_ms]
+		, [avg_cpu_time_ms]
+		, [avg_logical_io_reads]
+		, CONVERT(DECIMAL(15,2), [avg_logical_io_reads]	/ 128.) AS [average_mb_read]
+		, [avg_logical_io_writes]
+		, [avg_query_wait_time_ms]
+		, [total_duration_ms]
+		, [total_cpu_ms]
+		, [total_reads]
+		, CONVERT(DECIMAL(15,2), [total_reads]	/ 128.) AS [total_mb_read]
+		, CONVERT(DECIMAL(15,2), [total_reads]	/ 128. / 1024) AS [total_gb_read]
+		, CONVERT(DECIMAL(15,2), [total_reads]	/ 128. / 1024 / 1024) AS [total_tb_read]
+		, [total_writes]
+		, [total_query_wait_time_ms]
+		, [total_query_wait_time_ms_breakdown]
+		, [percentge_duration]
+		, [percentge_cpu]
+		, [percentge_reads]
+		, [percentge_writes]
+		, [percentage_query_wait_time_ms]
+		, ISNULL(TRY_CONVERT(XML, '<!--' + REPLACE(query_sql_text, '--', '/* this line was commented out */') + '-->'), query_sql_text) AS query_sql_text
+		, ISNULL(TRY_CONVERT(XML, query_plan), query_plan) AS query_plan
 FROM #output
-ORDER BY Id
+ORDER BY [Id]
 
 OnError:
 GO

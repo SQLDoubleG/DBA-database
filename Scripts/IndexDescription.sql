@@ -33,6 +33,7 @@ GO
 --				01/09/2020 RAG 	- Added temp table to prestage index usage stats for performance
 --				14/01/2021 RAG	- Added parameter @EngineEdition
 --				19/01/2021 RAG	- Added parameter @includeFrag to add fragmentation levels (limited)
+--				19/02/2021 RAG	- List key columns order by key_ordinal
 --				
 -- =============================================
 DECLARE 
@@ -165,7 +166,7 @@ WHILE @countDB <= @numDB BEGIN
 										WHERE ixc.object_id = ix.object_id 
 											AND ixc.index_id = ix.index_id 
 											AND ixc.is_included_column = 0
-										ORDER BY ixc.index_column_id
+										ORDER BY ixc.key_ordinal
 										FOR XML PATH ('''')), 1,2,'''')) + 
 					N'')'' + CHAR(10) +
 					ISNULL((SELECT N''INCLUDE ('' + STUFF( 
@@ -212,7 +213,7 @@ WHILE @countDB <= @numDB BEGIN
 							WHERE ixc.object_id = ix.object_id 
 								AND ixc.index_id = ix.index_id 
 								AND ixc.is_included_column = 0
-							ORDER BY ixc.index_column_id
+							ORDER BY ixc.key_ordinal
 							FOR XML PATH ('''')), 1,2,'''')
 				
 				, STUFF( (SELECT N'', '' + QUOTENAME(c.name)

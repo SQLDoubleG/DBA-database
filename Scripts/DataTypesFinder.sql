@@ -145,7 +145,7 @@ WHILE @countDB <= @numDB BEGIN
 				LEFT JOIN sys.default_constraints AS df
 					ON df.parent_object_id = c.object_id
 						AND df.parent_column_id = c.column_id
-			WHERE ty.name IN (SELECT dataType FROM @dataTypesTable)
+			WHERE ty.name IN (SELECT dataType COLLATE DATABASE_DEFAULT FROM @dataTypesTable)
 				AND t.is_ms_shipped <> 1'
 		
 	EXEC sp_executesql @stmt = @sqlString, @params = N'@dataTypes NVARCHAR(1000)', @dataTypes = @dataTypes

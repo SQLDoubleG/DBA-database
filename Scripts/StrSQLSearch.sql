@@ -41,6 +41,7 @@ GO
 --				14/10/2018 - RAG - Added TRY CATCH block to allow databases to be non accessible like secondary non-readble 
 --				14/01/2021 - RAG - Added parameter @EngineEdition
 --				20/01/2021 - RAG - Added table name to Default constraint objectName
+--				15/04/2021 - RAG - Added user defined Table types
 --
 -- ============================================= 
 DECLARE @pattern			SYSNAME = 'pattern'
@@ -110,7 +111,7 @@ WHILE @countDB <= @numDB BEGIN
 					-- handled in the final union, creates duplicate results. 
 					AND o.type_desc NOT IN (''CHECK_CONSTRAINT'', ''DEFAULT_CONSTRAINT'', ''FOREIGN_KEY_CONSTRAINT'') 
 					AND o.is_ms_shipped = 0 
-			UNION  
+			UNION ALL
 			SELECT DB_NAME() 
 					, QUOTENAME(OBJECT_SCHEMA_NAME(o.object_id)) + ''.'' + QUOTENAME(o.name) + ''.'' + QUOTENAME(c.name) 
 					, o.type_desc + ''_COLUMN'' 
@@ -125,7 +126,7 @@ WHILE @countDB <= @numDB BEGIN
 						ON t.xusertype = c.user_type_id 
 				WHERE c.name LIKE @pattern 
 					AND is_ms_shipped = 0 
-			UNION 
+			UNION ALL 
 			SELECT DB_NAME() 
 					, QUOTENAME(OBJECT_SCHEMA_NAME(o.[parent_object_id])) + ''.''
 						+ QUOTENAME(OBJECT_NAME(o.[parent_object_id])) + ''.''
@@ -140,7 +141,7 @@ WHILE @countDB <= @numDB BEGIN
 				WHERE (dc.[definition] LIKE @pattern OR cc.[definition] LIKE @pattern 
 						OR dc.name LIKE @pattern OR cc.name LIKE @pattern) 
 					AND o.is_ms_shipped = 0 
-			UNION 
+			UNION ALL 
 			SELECT DB_NAME() 
 					, QUOTENAME(OBJECT_SCHEMA_NAME(o.[object_id])) + ''.'' + QUOTENAME(o.name) 
 					, o.type_desc 
@@ -157,7 +158,31 @@ WHILE @countDB <= @numDB BEGIN
 
 				WHERE o.name LIKE @pattern 
 					AND o.is_ms_shipped = 0 
+            UNION ALL
+            SELECT DB_NAME() 
+					, QUOTENAME(SCHEMA_NAME(tt.[schema_id])) + ''.'' + QUOTENAME(tt.[name]) 
+					, o.type_desc 
+					, ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) +
+						''CREATE TYPE '' + QUOTENAME(SCHEMA_NAME(tt.[schema_id])) + ''.'' + QUOTENAME(tt.[name]) + '' AS TABLE ('' + CHAR(10) +
+						STUFF(
+						(SELECT '', '' + ac.name + '' '' + ty.name + '' ('' + 
+							
+								CAST(CASE WHEN ty.name IN (N''nchar'', N''nvarchar'') AND ac.max_length <> -1 THEN ac.max_length/2 
+										ELSE ac.max_length 
+									END AS VARCHAR(30)) + '')'' +
+								CASE WHEN ac.is_nullable = 0 THEN '' NOT'' ELSE '''' END + '' NULL'' + CHAR(10)
 
+							FROM sys.all_columns AS ac
+							INNER JOIN sys.types AS ty
+								ON ty.user_type_id = ac.user_type_id
+
+							WHERE ac.object_id = o.object_id
+							FOR XML PATH('''')), 1,2,'''') 
+						+ '')'' AS [definition]
+				FROM sys.objects AS o 
+					INNER JOIN sys.table_types AS tt
+						ON tt.type_table_object_id = o.[object_id] 
+				WHERE o.name LIKE @pattern 
 
 		IF OBJECT_ID(''sysarticles'') IS NOT NULL BEGIN  
 			INSERT INTO #result ( databaseName, objectName, objectTypeDesc, objectDefinition) 
