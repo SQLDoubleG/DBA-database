@@ -1,8 +1,8 @@
-SET QUOTED_IDENTIFIER ON
+SET QUOTED_IDENTIFIER ON;
 GO
-SET ANSI_NULLS ON
+SET ANSI_NULLS ON;
 GO
-SET NOCOUNT ON 
+SET NOCOUNT ON; 
 GO
 --=============================================
 -- Copyright (C) 2021 Raul Gonzalez, @SQLDoubleG
@@ -25,6 +25,7 @@ GO
 -- Parameters:
 --				@path	        > Where the files will be added / moved		
 --              @fileSize_MB	> Size of the DATA files in MB
+--				@fileMaxSize_MB	> Max size of the DATA files in MB
 --              @fileGrowth_MB	> Growth of the DATA files in MB
 --              @logSize_MB		> Size of the LOG file in MB
 --              @logGrowth_MB	> Growth of the LOG file in MB
@@ -34,91 +35,139 @@ GO
 --
 -- Log History:	
 --				16/02/2021	RAG Created
+--				16/02/2021	RAG Created
 --
 -- =============================================
 
-DECLARE @path					NVARCHAR(512) = 'Z:\tempdb\'
-DECLARE @fileSize_MB			SMALLINT = 10240
-DECLARE @fileGrowth_MB			SMALLINT = 1024
-DECLARE @logSize_MB				SMALLINT = 4096
-DECLARE @logGrowth_MB			SMALLINT = 1024
-DECLARE @execute				CHAR(1) = 'N'
+DECLARE @path          	nvarchar(512) = 'Z:\tempdb\'
+DECLARE @fileSize_MB   	smallint = 2048
+DECLARE @fileMaxSize_MB	smallint = 20480
+DECLARE @fileGrowth_MB 	smallint = 2048
+DECLARE @logSize_MB    	smallint = 4096
+DECLARE @logGrowth_MB  	smallint = 1024
+DECLARE @execute       	char(1) = 'Y';
 
 -- ============================================= 
 -- Do not modify below this line
 --	unless you know what you are doing!!
 -- =============================================
 
-DECLARE @SQL					NVARCHAR(4000)
-DECLARE @cores_per_numa_node	INT = (SELECT COUNT(*) FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE')
+DECLARE @SQL                    nvarchar(4000)
+DECLARE @cores_per_numa_node    int;
+DECLARE @n_data_files           int;
 
-IF OBJECT_ID('tempdb..#pathExists') IS NOT NULL DROP TABLE #pathExists
+DROP TABLE IF EXISTS #cmd;
 
-CREATE TABLE #pathExists(
-file_exists		BIT
-, is_dir		BIT
-, parent_exists BIT
-);
+SELECT @n_data_files         = COUNT(*)
+	FROM tempdb.sys.database_files AS df
+	WHERE type_desc = 'ROWS';
 
-INSERT #pathExists (file_exists, is_dir, parent_exists)
-EXEC xp_fileexist @path;
+SELECT @cores_per_numa_node = (SELECT t.hyperthread_ratio / COUNT(DISTINCT s.parent_node_id) AS physical_cores_per_numa_node 
+									FROM sys.dm_os_schedulers AS s
+										CROSS APPLY (SELECT hyperthread_ratio FROM sys.dm_os_sys_info) AS t
+									WHERE s.status = N'VISIBLE ONLINE'
+									GROUP BY t.hyperthread_ratio);
 
-IF NOT EXISTS (SELECT * FROM #pathExists WHERE is_dir = 1) BEGIN
-	RAISERROR ('The specified path does not exist, please provide a valid path', 16, 1, 1)
-	RETURN
-END;
+SET @cores_per_numa_node = (CASE WHEN @cores_per_numa_node < @n_data_files THEN @n_data_files ELSE @cores_per_numa_node END)
 
+-- Adjust the number of files to 8 or less + 1 for the log file
+SET @cores_per_numa_node = CASE WHEN @cores_per_numa_node > 8 THEN 8 ELSE @cores_per_numa_node END + 1; -- + log file
 
-DECLARE @dbfiles TABLE(
-file_id			INT
-, file_exists	BIT
-, logical_name	SYSNAME
-, physical_name NVARCHAR(512)
-, size_mb		INT
-, growth_mb		INT
+;WITH tempdb_files AS(
+SELECT 1 AS id
+UNION ALL
+SELECT tempdb_files.id + 1
+    FROM tempdb_files
+    WHERE tempdb_files.id < @cores_per_numa_node 
 )
+-- Primary Data File
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME=[tempdev], ' +
+									'FILENAME=''' + @path + 'tempdb.mdf'', ' + 
+                                    'SIZE=' + CONVERT(varchar(30),@fileSize_MB) + 'MB, ' + 
+                                    'MAXSIZE=' + CONVERT(varchar(30),@fileMaxSize_MB) + 'MB, ' + 
+                                    'FILEGROWTH=' + CONVERT(varchar(30),@fileGrowth_MB) + 'MB)' AS AddModifyFile
+    INTO #cmd
+UNION ALL
+-- Log file
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME=[templog], ' +
+									'FILENAME=''' + @path + 'templog.ldf'', ' + 
+									'SIZE=' + CONVERT(varchar(30),@logSize_MB) + 'MB, ' + 
+									'FILEGROWTH=' + CONVERT(varchar(30),@logGrowth_MB) + 'MB)' AS AddFile
+UNION ALL
+-- Existing secondary data files
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME='+ QUOTENAME(fs.name) +', ' + 
+									CASE WHEN fs.name <> 'tempdev_' + CONVERT(varchar(30),f.id-1) 
+										THEN 'NEWNAME=''tempdev_' + CONVERT(varchar(30),f.id-1) + ''', ' 
+										ELSE ''
+									END +
+                                    'FILENAME=''' + @path + 'tempdev_' + CONVERT(varchar(30),f.id-1) + '.ndf'', ' + 
+                                    'SIZE=' + CONVERT(varchar(30),@fileSize_MB) + 'MB, ' + 
+                                    'MAXSIZE=' + CONVERT(varchar(30),@fileMaxSize_MB) + 'MB, ' + 
+                                    'FILEGROWTH=' + CONVERT(varchar(30),@fileGrowth_MB) + 'MB)' AS AddFile     
+    FROM tempdb_files AS f
+	INNER JOIN tempdb.sys.database_files AS fs
+		ON f.id = fs.file_id
+    WHERE f.id <= @cores_per_numa_node
+	AND f.id > 2
+UNION ALL
+-- Files to be added
+SELECT 'ALTER DATABASE tempdb ADD FILE(NAME=''tempdev_' + CONVERT(varchar(30),f.id-1) + ''', ' + 
+                                        'FILENAME=''' + @path + 'tempdev_' + CONVERT(varchar(30),f.id-1) + '.ndf'', ' + 
+                                        'SIZE=' + CONVERT(varchar(30),@fileSize_MB) + 'MB, ' + 
+										'MAXSIZE=' + CONVERT(varchar(30),@fileMaxSize_MB) + 'MB, ' + 
+                                        'FILEGROWTH=' + CONVERT(varchar(30),@fileGrowth_MB) + 'MB)' AS AddFile     
+    FROM tempdb_files AS f
+	LEFT JOIN tempdb.sys.database_files AS fs
+		ON f.id = fs.file_id
+    WHERE f.id <= @cores_per_numa_node 
+		AND fs.file_id IS NULL
+	
+-- Now remove if existing files are as desired
+EXCEPT 
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME=['+ name + '], ' +
+									'FILENAME=''' + physical_name + ''', ' + 
+                                    'SIZE=' + CONVERT(varchar(30),size / 128) + 'MB, ' + 
+                                    'MAXSIZE=' + CONVERT(varchar(30),@fileMaxSize_MB) + 'MB, ' + 
+                                    'FILEGROWTH=' + CONVERT(varchar(30),growth / 128) + 'MB)' AS AddModifyFile
+	FROM tempdb.sys.database_files
+	WHERE file_id = 1
+EXCEPT 
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME=['+ name + '], ' +
+									'FILENAME=''' + physical_name + ''', ' + 
+                                    'SIZE=' + CONVERT(varchar(30),size / 128) + 'MB, ' + 
+                                    'FILEGROWTH=' + CONVERT(varchar(30),growth / 128) + 'MB)' AS AddModifyFile
+	FROM tempdb.sys.database_files
+	WHERE file_id = 2
+EXCEPT
+SELECT 'ALTER DATABASE tempdb MODIFY FILE(NAME='+ QUOTENAME(fs.name) +', ' + 
+									CASE WHEN fs.name <> 'tempdev_' + CONVERT(varchar(30),f.id-1) 
+										THEN 'NEWNAME=''tempdev_' + CONVERT(varchar(30),f.id-1) + ''', ' 
+										ELSE ''
+									END +
+                                    'FILENAME=''' + @path + 'tempdev_' + CONVERT(varchar(30),f.id-1) + '.ndf'', ' + 
+                                    'SIZE=' + CONVERT(varchar(30), size / 128 ) + 'MB, ' + 
+                                    'MAXSIZE=' + CONVERT(varchar(30),@fileMaxSize_MB) + 'MB, ' + 
+                                    'FILEGROWTH=' + CONVERT(varchar(30), growth / 128) + 'MB)' AS AddFile     
+    FROM tempdb_files AS f
+	INNER JOIN tempdb.sys.database_files AS fs
+		ON f.id = fs.file_id
+    WHERE f.id <= @cores_per_numa_node
+	AND fs.name = 'tempdev_' + CONVERT(varchar(30),f.id-1)
+	AND fs.physical_name = @path + 'tempdev_' + CONVERT(varchar(30),f.id-1) + '.ndf'
+	AND f.id > 2;
 
-;WITH cte AS (
-	SELECT 1 AS file_id
-	UNION ALL
-	SELECT file_id + 1
-	FROM cte
-	WHERE file_id <= @cores_per_numa_node
-)
-
-INSERT INTO @dbfiles 
-SELECT cte.file_id
-		, CASE WHEN mf.file_id IS NOT NULL THEN 1 ELSE 0 END as file_exists
-		, ISNULL(mf.name, 'temp' + CONVERT(SYSNAME, cte.file_id -1))
-		, @path + ISNULL(RIGHT(mf.physical_name, CHARINDEX('\',REVERSE(mf.physical_name), 1) -1), 'tempdb_mssql_' + CONVERT(SYSNAME, cte.file_id -1) + '.ndf')
-		, CASE WHEN cte.file_id <> 2 THEN @fileSize_MB ELSE @logSize_MB END 
-		, CASE WHEN cte.file_id <> 2 THEN @fileGrowth_MB ELSE @logGrowth_MB END 
-	FROM cte
-		LEFT JOIN sys.master_files AS mf
-			ON mf.database_id = 2
-				AND mf.file_id = cte.file_id
-
-
-DECLARE c CURSOR LOCAL STATIC FORWARD_ONLY FOR
-	SELECT 'ALTER DATABASE [tempdb]' + CASE WHEN file_exists = 1 THEN ' MODIFY' ELSE ' ADD' END + ' FILE' +
-				' (NAME = ' + QUOTENAME(logical_name) + 
-				', FILENAME = ''' + physical_name + '''' + 
-				', SIZE = ' + CONVERT(SYSNAME, size_mb) + 'MB' + 
-				', FILEGROWTH = ' + CONVERT(SYSNAME, growth_mb) + 'MB)' AS sqlcmd
-	FROM @dbfiles
-	ORDER BY file_id
-OPEN c
-FETCH NEXT FROM c INTO @SQL
+DECLARE cr CURSOR LOCAL FAST_FORWARD FORWARD_ONLY READ_ONLY FOR
+    SELECT AddModifyFile FROM #cmd;
+OPEN cr; 
+FETCH NEXT FROM cr INTO @sql;
 WHILE @@FETCH_STATUS = 0 BEGIN
-	
-	IF @execute = 'Y' BEGIN
-		EXECUTE sp_executesql @SQL
-	END ELSE BEGIN
-		PRINT @SQL
-	END
-	
-	FETCH NEXT FROM c INTO @SQL
-END
-CLOSE c
-DEALLOCATE c
-
+    IF @execute = 'Y' BEGIN
+        EXECUTE sys.sp_executesql @stmt = @sql;
+    END; 
+    ELSE BEGIN
+        PRINT @sql;
+    END;
+    FETCH NEXT FROM cr INTO @sql;
+END;
+CLOSE cr;
+DEALLOCATE cr;

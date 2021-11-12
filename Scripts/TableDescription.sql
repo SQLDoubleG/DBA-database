@@ -55,8 +55,9 @@ GO
 --									- ROW_OVERFLOW_DATA_MB	
 --				17/02/2021	RAG	- Fixed collation issues
 --				11/04/2021	RAG	- Changes
---                                  - Split Last User Access into Last Write / Last Read
---                                  - Split Total User Access into User Writes / User Reads
+--									- Split Last User Access into Last Write / Last Read
+--									- Split Total User Access into User Writes / User Reads
+--				21/10/2021	RAG	- Add FK DELETE and UPDATE actions
 ----------------------------------------------------------------------------------------
 --				 
 -- ============================================= 
@@ -123,7 +124,7 @@ CREATE TABLE #resultTables
 	, Collation				SYSNAME			NULL 
 	, [definition]			NVARCHAR(MAX)	NULL 
 	, Filestream			VARCHAR(3)		NULL 
-	, ReferencedColumn		SYSNAME			NULL 
+	, ReferencedColumn		NVARCHAR(256)	NULL 
 	, TableDescription		SQL_VARIANT		NULL 
 	, ColDescription		SQL_VARIANT		NULL) 
 	
@@ -424,7 +425,9 @@ WHILE @countDBs <= @numDBs BEGIN
 						WHEN c.is_filestream = 1 THEN ''Yes''  
 						ELSE '''' 
 					END 
-					, ISNULL(OBJECT_SCHEMA_NAME(rc.object_id) + ''.'' + OBJECT_NAME(rc.object_id) + ''.'' + rc.name, '''') 
+					, ISNULL(OBJECT_SCHEMA_NAME(rc.object_id) + ''.'' + OBJECT_NAME(rc.object_id) + ''.'' + rc.name 
+						+ '' (ON DELETE: '' + fk.delete_referential_action_desc COLLATE DATABASE_DEFAULT
+						+ '', ON UPDATE: '' + fk.update_referential_action_desc COLLATE DATABASE_DEFAULT + '')'', '''') 
 					, NULL 
 					, xp.value 
 				FROM sys.indexes AS i 

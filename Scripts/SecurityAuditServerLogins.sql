@@ -48,9 +48,9 @@ DECLARE @groupName		SYSNAME
 		, @numGroups	INT
 		, @countGroups	INT = 1
 
-IF OBJECT_ID('#tempdb..#windowsGroups')	IS NOT NULL DROP TABLE #windowsGroups
-IF OBJECT_ID('#tempdb..#usersInGroups')	IS NOT NULL DROP TABLE #usersInGroups
-IF OBJECT_ID('#tempdb..#allDbUsers')	IS NOT NULL DROP TABLE #allDbUsers
+IF OBJECT_ID('tempdb..#windowsGroups')	IS NOT NULL DROP TABLE #windowsGroups
+IF OBJECT_ID('tempdb..#usersInGroups')	IS NOT NULL DROP TABLE #usersInGroups
+IF OBJECT_ID('tempdb..#allDbUsers')	    IS NOT NULL DROP TABLE #allDbUsers
 
 CREATE TABLE #usersInGroups (
 	accountName			SYSNAME

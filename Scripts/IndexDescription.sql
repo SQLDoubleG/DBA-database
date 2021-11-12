@@ -34,12 +34,18 @@ GO
 --				14/01/2021 RAG	- Added parameter @EngineEdition
 --				19/01/2021 RAG	- Added parameter @includeFrag to add fragmentation levels (limited)
 --				19/02/2021 RAG	- List key columns order by key_ordinal
+--				13/05/2021 RAG	- Changes:
+--                                  - Partitioned indexes now display one row
+--                                  - Output will display only if the index is partitioned or not
+--				04/11/2021 RAG	- Changes:
+--									- Added @indexName to filter by index name
 --				
 -- =============================================
 DECLARE 
 	@dbname				SYSNAME		= NULL
-	, @schemaName		SYSNAME		
-	, @tableName		SYSNAME		
+	, @schemaName		SYSNAME		= NULL
+	, @tableName		SYSNAME		= NULL
+	, @indexName		SYSNAME		= NULL
 	, @sortInTempdb		NVARCHAR(3)	= 'ON'	-- set to on to reduce creation time, watch tempdb though!!!
 	, @dropExisting		NVARCHAR(3) = 'OFF'	-- Default OFF
 	, @online			NVARCHAR(3)	= 'ON'	-- Set to ON to avoid table locks
@@ -72,6 +78,7 @@ SET @sortOrder		= ISNULL(@sortOrder, 'index_id')
 
 IF OBJECT_ID('tempdb..#result')		IS NOT NULL DROP TABLE #result
 IF OBJECT_ID('tempdb..#databases')	IS NOT NULL DROP TABLE #databases
+IF OBJECT_ID('tempdb..#aggregate')	IS NOT NULL DROP TABLE #aggregate
 
 CREATE TABLE #result 
 	( ID							INT IDENTITY(1,1)	NOT NULL
@@ -270,12 +277,10 @@ WHILE @countDB <= @numDB BEGIN
 			WHERE o.type IN (''U'', ''V'')
 				AND o.is_ms_shipped <> 1
 				AND ix.type > 0				
-				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
 				AND SCHEMA_NAME(o.schema_id) LIKE ISNULL(@schemaName COLLATE DATABASE_DEFAULT, SCHEMA_NAME(o.schema_id))
-
-				--AND ( ISNULL(@tableName COLLATE DATABASE_DEFAULT, '''') = '''' OR o.name LIKE @tableName )
-				--AND ( ISNULL(@schemaName COLLATE DATABASE_DEFAULT, '''') = '''' OR SCHEMA_NAME(o.schema_id) LIKE @schemaName )
-		
+				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
+				AND ix.name LIKE ISNULL(@indexName COLLATE DATABASE_DEFAULT, ix.name)
+	
 		UNION ALL 
 
 		-- Get XML indexes 
@@ -407,12 +412,10 @@ WHILE @countDB <= @numDB BEGIN
 
 			WHERE OBJECTPROPERTY ( xix.object_id , ''IsUserTable'' ) = 1 -- o.type = ''U''
 				AND OBJECTPROPERTY ( xix.object_id , ''IsMSShipped'' ) = 0 -- o.is_ms_shipped <> 1
-				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
+
 				AND SCHEMA_NAME(o.schema_id) LIKE ISNULL(@schemaName COLLATE DATABASE_DEFAULT, SCHEMA_NAME(o.schema_id))
-
-				--AND ( ISNULL(@tableName COLLATE DATABASE_DEFAULT, '''') = '''' OR o.name LIKE @tableName )
-				--AND ( ISNULL(@schemaName COLLATE DATABASE_DEFAULT, '''') = '''' OR SCHEMA_NAME(o.schema_id) LIKE @schemaName )
-
+				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
+				AND xix.name LIKE ISNULL(@indexName COLLATE DATABASE_DEFAULT, ix.name)
 
 		UNION ALL 			
 		
@@ -562,11 +565,9 @@ WHILE @countDB <= @numDB BEGIN
 
 			WHERE o.type = ''U''
 				AND o.is_ms_shipped <> 1
-				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
 				AND SCHEMA_NAME(o.schema_id) LIKE ISNULL(@schemaName COLLATE DATABASE_DEFAULT, SCHEMA_NAME(o.schema_id))
-
-				--AND ( ISNULL(@tableName COLLATE DATABASE_DEFAULT, '''') = '''' OR o.name LIKE @tableName )
-				--AND ( ISNULL(@schemaName COLLATE DATABASE_DEFAULT, '''') = '''' OR SCHEMA_NAME(o.schema_id) LIKE @schemaName )
+				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
+				AND six.name LIKE ISNULL(@indexName COLLATE DATABASE_DEFAULT, six.name)
 
 		UNION ALL 
 
@@ -642,26 +643,18 @@ WHILE @countDB <= @numDB BEGIN
 
 			WHERE o.type = ''U''
 				AND o.is_ms_shipped <> 1
-				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
 				AND SCHEMA_NAME(o.schema_id) LIKE ISNULL(@schemaName COLLATE DATABASE_DEFAULT, SCHEMA_NAME(o.schema_id))
-
-				--AND ( ISNULL(@tableName COLLATE DATABASE_DEFAULT, '''') = '''' OR o.name LIKE @tableName )
-				--AND ( ISNULL(@schemaName COLLATE DATABASE_DEFAULT, '''') = '''' OR SCHEMA_NAME(o.schema_id) LIKE @schemaName )
-
-			--ORDER BY DatabaseName
-			--		, TableName
-			--		, is_primary_key DESC
-			--		, index_id 
-
+				AND o.name LIKE ISNULL(@tableName COLLATE DATABASE_DEFAULT, o.name)
 	' 
 
 	--SELECT @sqlString
 
 	INSERT INTO #result
 		EXEC sp_executesql @sqlString
-				, N'@tableName SYSNAME, @schemaName SYSNAME, @sortInTempdb NVARCHAR(3), @dropExisting NVARCHAR(3), @online NVARCHAR(3), @maxdop TINYINT, @includeFrag BIT'
-				, @tableName			= @tableName
+				, N'@schemaName SYSNAME, @tableName SYSNAME, @indexName SYSNAME, @sortInTempdb NVARCHAR(3), @dropExisting NVARCHAR(3), @online NVARCHAR(3), @maxdop TINYINT, @includeFrag BIT'
 				, @schemaName			= @schemaName
+				, @tableName			= @tableName
+				, @indexName			= @indexName
 				, @sortInTempdb			= @sortInTempdb
 				, @dropExisting			= @dropExisting
 				, @online				= @online
@@ -682,8 +675,9 @@ END
 -- Time to retrieve all data collected
 SELECT    r.dbname
 		, r.tableName
+		, r.index_id
 		, r.index_name
-		, r.partition_number
+		, CASE WHEN COUNT(*) = 1 THEN 'Not ' ELSE '' END + 'Partitioned' AS is_partitioned
 		, r.index_type
 		, r.filegroup_desc
 		, r.is_disabled
@@ -692,22 +686,42 @@ SELECT    r.dbname
 		, ISNULL([index_columns] , '-') AS [index_columns]
 		, ISNULL(included_columns, '-') AS included_columns
 		, ISNULL(filter			 , '-') AS filter
-		, r.row_count
-		, r.size_MB
-		, r.fill_factor
-		, r.reserved_MB
-		, r.data_compression_desc
-		, ISNULL(CONVERT(VARCHAR(30), r.avg_fragmentation_in_percent), 'N/A') AS avg_fragmentation_in_percent
-		, ISNULL(user_seeks	 , 0) AS user_seeks
-		, ISNULL(user_scans	 , 0) AS user_scans
-		, ISNULL(user_lookups, 0) AS user_lookups
-		, ISNULL(user_updates, 0) AS user_updates
+		, SUM(r.row_count			 ) AS row_count			 
+		, SUM(r.size_MB				 ) AS size_MB				 
+		, SUM(r.fill_factor			 ) AS fill_factor			 
+		, SUM(r.reserved_MB			 ) AS reserved_MB			 
+		, r.data_compression_desc AS data_compression_desc
+		, ISNULL(CONVERT(VARCHAR(30), AVG(r.avg_fragmentation_in_percent)), 'N/A') AS avg_fragmentation_in_percent
+		, SUM(ISNULL(user_seeks	 , 0)) AS user_seeks
+		, SUM(ISNULL(user_scans	 , 0)) AS user_scans
+		, SUM(ISNULL(user_lookups, 0)) AS user_lookups
+		, SUM(ISNULL(user_updates, 0)) AS user_updates
 		, DROP_INDEX_STATEMENT
 		, CREATE_INDEX_STATEMENT
+	INTO #aggregate
 	FROM #result AS r
+	GROUP BY r.dbname
+			, r.tableName
+			, r.index_id
+			, r.index_name
+			, r.index_type
+			, r.filegroup_desc
+			, r.is_disabled
+			, r.is_primary_key
+			, r.is_unique
+			, r.[index_columns] 
+			, r.included_columns
+			, r.filter		
+			, r.data_compression_desc
+			, r.DROP_INDEX_STATEMENT
+			, r.CREATE_INDEX_STATEMENT
+
+
+SELECT * FROM #aggregate
 	ORDER BY dbname
 		, tableName
 		, is_primary_key DESC
+		, [index_columns]
 		, CASE 
 				WHEN @sortOrder = 'index_id'		THEN index_id
 				WHEN @sortOrder = 'size_MB'			THEN size_MB
@@ -715,10 +729,6 @@ SELECT    r.dbname
 				WHEN @sortOrder = 'user_scans'		THEN user_scans
 				WHEN @sortOrder = 'user_lookups'	THEN user_lookups
 				WHEN @sortOrder = 'user_updates'	THEN user_updates
-				ELSE NULL
-			END 
-		, CASE 
-				WHEN @sortOrder = 'index_id'		THEN partition_number
 				ELSE NULL
 			END 
 		, CASE 
