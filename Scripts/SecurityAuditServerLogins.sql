@@ -37,17 +37,20 @@ GO
 -- =============================================
 DECLARE	@loginName		SYSNAME = NULL
 
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
+
 DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
-
 DECLARE @sqlString		NVARCHAR(4000)
-
 DECLARE @groupName		SYSNAME
 		, @numGroups	INT
 		, @countGroups	INT = 1
 
-IF OBJECT_ID('#tempdb..#windowsGroups')	IS NOT NULL DROP TABLE #windowsGroups
-IF OBJECT_ID('#tempdb..#usersInGroups')	IS NOT NULL DROP TABLE #usersInGroups
-IF OBJECT_ID('#tempdb..#allDbUsers')	IS NOT NULL DROP TABLE #allDbUsers
+IF OBJECT_ID('tempdb..#windowsGroups')	IS NOT NULL DROP TABLE #windowsGroups
+IF OBJECT_ID('tempdb..#usersInGroups')	IS NOT NULL DROP TABLE #usersInGroups
+IF OBJECT_ID('tempdb..#allDbUsers')	    IS NOT NULL DROP TABLE #allDbUsers
 
 CREATE TABLE #usersInGroups (
 	accountName			SYSNAME

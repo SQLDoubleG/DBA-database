@@ -41,6 +41,11 @@ DECLARE @sspid	int
 DECLARE @loginName SYSNAME  --= 'domain\user'
 DECLARE @n INT = 2147483647
 
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
+
 SELECT TOP (@n)
 		ISNULL(NULLIF( CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) / 3600 / 24 ),'0') + '.', '') + 
 			RIGHT('00' + CONVERT(VARCHAR(24), (DATEDIFF(SECOND, r.start_time, GETDATE())) / 3600 % 24 ), 2) + ':' + 

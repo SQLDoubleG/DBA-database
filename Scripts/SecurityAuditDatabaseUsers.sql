@@ -43,9 +43,14 @@ GO
 DECLARE	@dbname					sysname --= 'msdb'
 		, @db_principal_name	sysname = NULL
 		, @srv_principal_name 	sysname = NULL
-		, @onlyOrphanUsers		BIT		= 1
+		, @onlyOrphanUsers		BIT		= 0
 		, @includeSystemDBs		BIT		= 1
 		, @EngineEdition		INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+
+-- ============================================= 
+-- Do not modify below this line
+--	unless you know what you are doing!!
+-- ============================================= 
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
@@ -145,8 +150,8 @@ WHILE @countDBs <= @numDBs BEGIN
 						, authentication_type_desc
 						, STUFF((SELECT '', '' + dbr.name 
 									FROM sys.database_principals dbr 
-											LEFT JOIN sys.database_role_members AS drm
-													ON drm.member_principal_id = dbp.principal_id
+                                        LEFT JOIN sys.database_role_members AS drm 
+                                                ON drm.member_principal_id = dbp.principal_id
 									WHERE dbr.principal_id = drm.role_principal_id
 									FOR XML PATH('''')),1,2,'''') AS database_roles
 

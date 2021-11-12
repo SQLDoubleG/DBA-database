@@ -34,10 +34,12 @@ GO
 --				2019-03-20 RAG - Added support for not ONLINE databases by looking at sys.master_files instead
 --				2020-04-08 RAG - Added total size for each of the columns
 --				14/01/2021 RAG - Added parameter @EngineEdition
+--				11/02/2021 RAG - Added parameter @includeSystem to include system databases
 --
 -- =============================================
 DECLARE @dbname				SYSNAME 
 		, @EngineEdition	INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+		, @includeSystem	BIT		= 0
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
@@ -62,7 +64,9 @@ INSERT INTO @dbs (dbname)
 	SELECT name 
 		FROM sys.databases 
 		WHERE name LIKE ISNULL(@dbname, name)
+			AND (@includeSystem = 1 OR database_id > 4)
 		ORDER BY name
+
 
 SET @numDBs = @@ROWCOUNT
  
