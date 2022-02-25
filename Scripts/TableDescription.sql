@@ -58,6 +58,7 @@ GO
 --									- Split Last User Access into Last Write / Last Read
 --									- Split Total User Access into User Writes / User Reads
 --				21/10/2021	RAG	- Add FK DELETE and UPDATE actions
+--				08/02/2022	RAG	- Add ColIndexes to display indexes that include this column 
 ----------------------------------------------------------------------------------------
 --				 
 -- ============================================= 
@@ -118,6 +119,7 @@ CREATE TABLE #resultTables
 	, IsIdentity			VARCHAR(3)		NULL 
 	, Mandatory				VARCHAR(3)		NULL 
 	, DefaultValue			NVARCHAR(MAX)	NULL 
+	, CheckValue			NVARCHAR(MAX)	NULL
 	, PrimaryKey			VARCHAR(30)		NULL 
 	, ForeignKey			VARCHAR(3)		NULL 
 	, IsComputed			VARCHAR(3)		NULL 
@@ -126,7 +128,8 @@ CREATE TABLE #resultTables
 	, Filestream			VARCHAR(3)		NULL 
 	, ReferencedColumn		NVARCHAR(256)	NULL 
 	, TableDescription		SQL_VARIANT		NULL 
-	, ColDescription		SQL_VARIANT		NULL) 
+	, ColDescription		SQL_VARIANT		NULL
+	, ColIndexes			nvarchar(MAX)	NULL) 
 	
 SELECT *  
 	INTO #resultColumns 
@@ -371,6 +374,7 @@ WHILE @countDBs <= @numDBs BEGIN
 					, IsIdentity 
 					, Mandatory 
 					, DefaultValue 
+					, CheckValue 
 					, PrimaryKey 
 					, ForeignKey 
 					, IsComputed 
@@ -379,7 +383,8 @@ WHILE @countDBs <= @numDBs BEGIN
 					, Filestream 
 					, ReferencedColumn 
 					, TableDescription 
-					, ColDescription) 
+					, ColDescription 
+					, ColIndexes) 
 			SELECT DB_NAME() 
 					, OBJECT_SCHEMA_NAME(i.object_id) 
 					, OBJECT_NAME(i.object_id) 
@@ -403,6 +408,7 @@ WHILE @countDBs <= @numDBs BEGIN
 							WHEN df.definition IS NOT NULL THEN SUBSTRING(df.definition, 2, LEN(df.definition)-2) -- to remove extra parenthesis 
 							ELSE '''' 
 						END 
+					, ISNULL(chk.definition, '''') 
 					, (SELECT ''Yes (''  + CASE WHEN ix.type > 1 THEN ''Non-'' ELSE '''' END + ''Clustered)''
 											FROM sys.index_columns AS ixc  
 												LEFT JOIN sys.indexes AS ix 
@@ -430,6 +436,15 @@ WHILE @countDBs <= @numDBs BEGIN
 						+ '', ON UPDATE: '' + fk.update_referential_action_desc COLLATE DATABASE_DEFAULT + '')'', '''') 
 					, NULL 
 					, xp.value 
+					, STUFF((SELECT DISTINCT '', '' + ix.name 
+						FROM sys.index_columns AS ixc
+							INNER JOIN sys.indexes AS ix
+								ON ix.object_id = ixc.object_id
+									AND ix.index_id = ixc.index_id
+						WHERE ixc.object_id = i.object_id
+							AND ixc.object_id = i.object_id
+							AND ixc.column_id = c.column_id
+						FOR XML PATH('''')), 1,2,'''') AS column_indexes
 				FROM sys.indexes AS i 
 					INNER JOIN sys.columns AS c 
 						ON c.object_id = i.object_id 
@@ -439,6 +454,9 @@ WHILE @countDBs <= @numDBs BEGIN
 					LEFT JOIN sys.default_constraints AS df 
 						ON df.parent_object_id = c.object_id 
 							AND df.parent_column_id = c.column_id 
+					LEFT JOIN sys.check_constraints AS chk 
+						ON chk.parent_object_id = c.object_id 
+							AND chk.parent_column_id = c.column_id 
 					LEFT JOIN sys.computed_columns AS cc 
 						ON cc.object_id = i.object_id 
 							AND cc.column_id = c.column_id 
@@ -547,6 +565,7 @@ ELSE BEGIN
 					, [Filestream]			 
 					, TableDescription 
 					, ColDescription 
+					, ColIndexes 
 				FROM #resultTables 
 			UNION ALL 
 			SELECT databaseName 
@@ -582,6 +601,7 @@ ELSE BEGIN
 					, [Filestream] 
 					, TableDescription 
 					, ColDescription 
+					, ColIndexes 
 				FROM #resultColumns 
 		) 
 		SELECT ISNULL(databaseName,'') AS databaseName 
@@ -616,6 +636,7 @@ ELSE BEGIN
 				, ISNULL(Filestream,'') AS Filestream			 
 				, ISNULL(TableDescription,'') AS TableDescription 
 				, ISNULL(ColDescription,'') AS ColDescription 
+				, ISNULL(ColIndexes,'') AS ColIndexes
 			FROM cte 
 			ORDER BY databaseName 
 				, schemaName 
