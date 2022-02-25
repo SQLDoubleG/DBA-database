@@ -49,6 +49,9 @@ GO
 --                                  - Return interval in SMALLDATETIME
 --				11/06/2021  RAG - Changes:
 --                                  - Added physical reads
+--				01/12/2021	RAG	- Changes
+--									- Changed some column names to match others (avg)
+--									- Added validation in case object does not exist
 --
 -- SELECT * FROM sys.databases WHERE is_query_store_on =1 
 -- =============================================
@@ -286,7 +289,13 @@ SET @countDBs = 1; -- Reset for next loops
 SET @sql = 'USE [?]
 
 -- Get some data before for performance
-DECLARE @objectId INT = OBJECT_ID(@objectName)
+DECLARE @objectId int = OBJECT_ID(@objectName)
+
+-- object name is not correct
+IF @objectId IS NULL AND @objectName IS NOT NULL BEGIN
+	RAISERROR (''@object_name does not exist, please double check and run again'', 16, 1, 1) WITH NOWAIT;
+	RETURN;
+END;
 
 SELECT TOP (@topNrows) 
 		CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
@@ -438,13 +447,13 @@ SELECT [database_name]
 		, [avg_duration_ms]
 		, [avg_cpu_time_ms]
 		, [avg_logical_io_reads]
-		, CONVERT(decimal(15,2), [avg_logical_io_reads]		/ 128.) AS [average_mb_read]
+		, CONVERT(decimal(15,2), [avg_logical_io_reads]		/ 128.) AS [avg_mb_read]
 		, [avg_physical_io_reads]
-		, CONVERT(decimal(15,2), [avg_physical_io_reads]	/ 128.) AS [average_physical_mb_read]
+		, CONVERT(decimal(15,2), [avg_physical_io_reads]	/ 128.) AS [avg_physical_mb_read]
 		, [avg_logical_io_writes]
-		, CONVERT(decimal(15,2), [avg_logical_io_writes]	/ 128.) AS [average_mb_written]
+		, CONVERT(decimal(15,2), [avg_logical_io_writes]	/ 128.) AS [avg_mb_written]
 		, [avg_query_max_used_memory]
-		, CONVERT(decimal(15,2), [avg_query_max_used_memory]/ 128.) AS [average_mb_memory]
+		, CONVERT(decimal(15,2), [avg_query_max_used_memory]/ 128.) AS [avg_mb_memory]
 		, [avg_query_wait_time_ms]
 		, [total_duration_ms]
 		, [total_cpu_ms]
