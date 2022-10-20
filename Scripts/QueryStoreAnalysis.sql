@@ -1,6 +1,6 @@
-SET QUOTED_IDENTIFIER ON
+SET QUOTED_IDENTIFIER ON;
 GO
-SET ANSI_NULLS ON
+SET ANSI_NULLS ON;
 GO
 --=============================================
 -- Copyright (C) 2019 Raul Gonzalez, @SQLDoubleG (RAG)
@@ -26,80 +26,93 @@ GO
 --				- @dateFrom
 --				- @dateTo		
 --				- @topNrows	
---				- @objectName 
---				- @queryId	
---				- @planId	
+--				- @object_name 
+--				- @query_id	
+--				- @plan_id	
 --				- @OrderBy	
 --
 -- Log History:	
 --				11/11/2019  RAG - Created
 --				18/11/2019  RAG - Added average wait times per wait type
 --				24/01/2021  RAG - Added functionality to go through all databaes
---				05/03/2021  RAG - Added parameter @objectName, which will accept values in the format "schema.object_name" 
+--				05/03/2021  RAG - Added parameter @object_name, which will accept values in the format "schema.object_name" 
 --				26/03/2021  RAG - Changes:
---									- Added parameter @queryId, to display only one query
---									- Added parameter @planId, to display only one plan
+--									- Added parameter @query_id, to display only one query
+--									- Added parameter @plan_id, to display only one plan
 --									- Changed values for sorting on averages to simplify
 --				30/03/2021  RAG - Changes in the behaviour:
---									- When passing either @objectName, @queryId or @planId, it will display data per interval so 
+--									- When passing either @object_name, @query_id or @plan_id, it will display data per interval so 
 --										you can see how the query is performing through the selected period
---				13/04/2021  RAG - @objectId will be calculated from @objectName in advance
+--				13/04/2021  RAG - @object_id will be calculated from @object_name in advance
 --				29/04/2021  RAG - Changes:
---                                  - Fixed bug when sorting if object/query/plan was passed
---                                  - Return interval in SMALLDATETIME
+--									- Fixed bug when sorting if object/query/plan was passed
+--									- Return interval in SMALLDATETIME
 --				11/06/2021  RAG - Changes:
 --                                  - Added physical reads
 --				01/12/2021	RAG	- Changes
 --									- Changed some column names to match others (avg)
 --									- Added validation in case object does not exist
+--				01/03/2022	RAG	- Changes
+--									- variable names to lower case and _
+--									- fix wait stats as currently were always aggregated per query_plan_id, even when output was aggregated by interval
+--										due to one of the params @object_name, @query_id, @plan_id being passed to the script
+--				01/04/2022	RAG	- Changes
+--									- Added avg_rowcount and total_rowcount
+--				17/10/2022	RAG	- Changes
+--									- Changed some parts to dynamic SQL for performance
 --
--- SELECT * FROM sys.databases WHERE is_query_store_on =1 
+-- SELECT * FROM sys.databases WHERE is_query_store_on = 1 ORDER BY name
 -- =============================================
 
-DECLARE @dbname	    sysname			= NULL
-DECLARE @dateFrom	datetime2		= DATEADD(DAY, -8, GETDATE())
-DECLARE @dateTo		datetime2		= GETDATE()
-DECLARE @topNrows	int				= 10
-DECLARE @objectName nvarchar(257)	= NULL
-DECLARE @queryId	int				= NULL
-DECLARE @planId		int				= NULL
-DECLARE @OrderBy	sysname			= 'total_cpu'
+DECLARE @dbname	    sysname			= NULL;
+DECLARE @dateFrom	datetime2		= DATEADD(DAY, -8, GETDATE());
+DECLARE @dateTo		datetime2		= GETDATE();
+DECLARE @topNrows	int				= 10;
+DECLARE @object_name nvarchar(257)	= NULL;
+DECLARE @query_id	int				= NULL;
+DECLARE @plan_id	int				= NULL;
+DECLARE @OrderBy	sysname			= 'total_cpu';
 
 -- ============================================= 
 -- Do not modify below this line
 --	unless you know what you are doing!!
 -- ============================================= 
-SET NOCOUNT ON
-SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+SET NOCOUNT ON;
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
 DECLARE @sqlstringdb	nvarchar(MAX) 
 		, @countDBs		int = 1 
 		, @numDBs		int 
+		, @whereclause  nvarchar(MAX) = ''
+		, @groupbyclause nvarchar(MAX) = ''
+		, @orderclause  nvarchar(MAX) = '';
 
 DECLARE @databases table  
 		( ID			int IDENTITY 
-		, dbname		sysname NOT NULL) 
+		, dbname		sysname NOT NULL); 
 
-IF OBJECT_ID('tempdb..#intervals')	IS NOT NULL DROP TABLE #intervals
-IF OBJECT_ID('tempdb..#waits')		IS NOT NULL DROP TABLE #waits
-IF OBJECT_ID('tempdb..#totals')		IS NOT NULL DROP TABLE #totals
-IF OBJECT_ID('tempdb..#output')		IS NOT NULL DROP TABLE #output
+IF OBJECT_ID('tempdb..#intervals')	IS NOT NULL DROP TABLE #intervals;
+IF OBJECT_ID('tempdb..#waits')		IS NOT NULL DROP TABLE #waits;
+IF OBJECT_ID('tempdb..#totals')		IS NOT NULL DROP TABLE #totals;
+IF OBJECT_ID('tempdb..#output')		IS NOT NULL DROP TABLE #output;
 
 CREATE TABLE #intervals(
 	[database_name]					sysname NULL
 	, [runtime_stats_interval_id]	bigint	NULL
 	, [start_time]					datetimeoffset NULL
-	, [end_time]					datetimeoffset NULL)
+	, [end_time]					datetimeoffset NULL);
 
 CREATE TABLE #waits(
 	[database_name]                         sysname NULL
-    , [plan_id]								bigint	NULL
+	, [plan_id]								bigint	NULL
+	, [runtime_stats_interval_id]			bigint	NULL
 	, [avg_query_wait_time_ms]				float	NULL
 	, [total_query_wait_time_ms]			bigint	NULL
-	, [total_query_wait_time_ms_breakdown]	nvarchar(4000) NULL)
+	, [total_query_wait_time_ms_breakdown]	nvarchar(4000) NULL);
 
 CREATE TABLE #totals(
-	 [database_name]			sysname NULL
+	[database_name]			sysname NULL
 	, [total_executions]		bigint NULL
 	, [total_duration]			float NULL
 	, [total_cpu]				float NULL
@@ -107,7 +120,7 @@ CREATE TABLE #totals(
 	, [total_physical_reads]	float NULL
 	, [total_writes]			float NULL
 	, [total_memory]			float NULL
-)
+);
 
 CREATE TABLE #output(
 	[Id]									int IDENTITY NOT NULL
@@ -124,6 +137,7 @@ CREATE TABLE #output(
 	, [total_physical_reads]				bigint NULL
 	, [total_writes]						bigint NULL
 	, [total_memory]						bigint NULL
+	, [total_rowcount]						bigint NULL
 	, [total_query_wait_time_ms]			bigint NULL
 	, [total_query_wait_time_ms_breakdown]	nvarchar(4000) NULL
 	, [avg_duration_ms]						bigint NULL
@@ -132,6 +146,7 @@ CREATE TABLE #output(
 	, [avg_physical_io_reads]				bigint NULL
 	, [avg_logical_io_writes]				bigint NULL
 	, [avg_query_max_used_memory]			bigint NULL
+	, [avg_rowcount]						float NULL
 	, [avg_query_wait_time_ms]				bigint NULL
 	, [percentge_duration]					decimal(5,2) NULL
 	, [percentge_cpu]						decimal(5,2) NULL
@@ -142,33 +157,33 @@ CREATE TABLE #output(
 	, [percentage_query_wait_time_ms]		decimal(5,2) NULL
 	, [query_sql_text]						nvarchar(MAX) NULL
 	, [query_plan]							nvarchar(MAX) NULL
-)
+);
 
-SET @dateTo		= ISNULL(@dateTo, DATEADD(DAY, 7, @dateFrom)) -- one week
-SET @topNrows	= ISNULL(@topNrows, 10)
-SET @OrderBy	= ISNULL(@OrderBy, 'total_cpu')
+SET @dateTo		= ISNULL(@dateTo, DATEADD(DAY, 7, @dateFrom)); -- one week
+SET @topNrows	= ISNULL(@topNrows, 10);
+SET @OrderBy	= ISNULL(@OrderBy, 'total_cpu');
 
 -- Get everything if we want just an object
-SET @topNrows	= CASE WHEN COALESCE(@objectName, CONVERT(varchar(30), @queryId), CONVERT(varchar(30), @planId)) 
-                        IS NOT NULL THEN 2140000000 
-                        ELSE @topNrows 
-                    END
+SET @topNrows	= CASE WHEN COALESCE(@object_name, CONVERT(varchar(30), @query_id), CONVERT(varchar(30), @plan_id)) 
+						IS NOT NULL THEN 2140000000 
+						ELSE @topNrows 
+					END;
 
-DECLARE @EngineEdition	int	= CONVERT(int, SERVERPROPERTY('EngineEdition'))
-DECLARE @numericVersion int = CONVERT(int, PARSENAME(CONVERT(sysname, SERVERPROPERTY('ProductVersion')),4))
+DECLARE @EngineEdition	int	= CONVERT(int, SERVERPROPERTY('EngineEdition'));
+DECLARE @numericVersion int = CONVERT(int, PARSENAME(CONVERT(sysname, SERVERPROPERTY('ProductVersion')),4));
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
-	SET @dbname	= DB_NAME()
-END
+	SET @dbname	= DB_NAME();
+END;
 
 INSERT INTO @databases  
 	SELECT TOP(100) PERCENT name  
 		FROM sys.databases  
 		WHERE is_query_store_on = 1
 			AND name LIKE ISNULL(@dbname, name) 
-		ORDER BY name ASC		 
-SET @numDBs = @@ROWCOUNT 
+		ORDER BY name ASC;		 
+SET @numDBs = @@ROWCOUNT; 
 
 IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu', 'avg_reads', 'avg_physical_reads', 'avg_writes', 'avg_memory'
 					, 'total_duration', 'total_cpu', 'total_reads', 'total_physical_reads', 'total_writes', 'total_memory') BEGIN 
@@ -184,8 +199,8 @@ IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu', 'avg_reads', 
 - total_writes		
 
 Please Choose on of them and run it again', 16, 0) WITH NOWAIT;
-	GOTO OnError
-END
+	GOTO OnError;
+END;
 
 -- Get all the intervals within the DateFrom and DateTo specified
 DECLARE @sql nvarchar(MAX) = 'USE [?]
@@ -195,20 +210,20 @@ DECLARE @sql nvarchar(MAX) = 'USE [?]
 			, end_time
 		FROM sys.query_store_runtime_stats_interval
 		WHERE start_time <= @dateTo
-			AND end_time >= @dateFrom'
+			AND end_time >= @dateFrom';
 
 WHILE @countDBs <= @numDBs BEGIN 
-    SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs)
-	SET @sqlstringdb = REPLACE(@sql, '?', @dbname)
+	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
+	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
 	INSERT INTO #intervals ([database_name], [runtime_stats_interval_id], [start_time], [end_time])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt	= @sqlstringdb
 		, @params	= N'@dateFrom DATETIME2, @dateTo DATETIME2'
 		, @dateFrom = @dateFrom 
-		, @dateTo	= @dateTo
-        
-    SET @countDBs = @countDBs + 1;
+		, @dateTo	= @dateTo;
+		
+	SET @countDBs = @countDBs + 1;
 END;
 SET @countDBs = 1; -- Reset for next loops
 
@@ -216,41 +231,58 @@ SET @countDBs = 1; -- Reset for next loops
 
 -- Capture Wait Stats if 2017 or higher
 SET @sql = 'USE [?]
-SELECT DB_NAME()
-        , w.plan_id
-		, AVG(w.avg_query_wait_time_ms) AS avg_query_wait_time_ms
-		, SUM(w.total_query_wait_time_ms) AS total_query_wait_time_ms
-		, STRING_AGG(w.wait_category_desc + '' (Total: '' + CONVERT(VARCHAR(30), w.total_query_wait_time_ms) + '' - Avg: '' + CONVERT(VARCHAR(30), w.avg_query_wait_time_ms) + '')'', '', '') 
-			WITHIN GROUP(ORDER BY w.total_query_wait_time_ms DESC) AS total_query_wait_time_ms_breakdown
+
+DECLARE @object_id int = OBJECT_ID(@object_name)
+
+-- object name is not correct
+IF @object_id IS NULL AND @object_name IS NOT NULL BEGIN
+	RAISERROR (''@object_name does not exist, please double check and run again'', 16, 1, 1) WITH NOWAIT;
+	RETURN;
+END;
+
+SELECT DB_NAME(),
+	w.plan_id,
+	w.runtime_stats_interval_id,
+	AVG(w.avg_query_wait_time_ms) AS avg_query_wait_time_ms,
+	SUM(w.total_query_wait_time_ms) AS total_query_wait_time_ms,
+	STRING_AGG(w.wait_category_desc + '' (Total: '' + CONVERT(varchar(30), w.total_query_wait_time_ms) + '' - Avg: ''
+					+ CONVERT(varchar(30), w.avg_query_wait_time_ms) + '')'',
+					'', '') WITHIN GROUP (ORDER BY w.total_query_wait_time_ms DESC) AS total_query_wait_time_ms_breakdown
 	FROM (
-		SELECT w.plan_id
-			   , w.wait_category_desc
-			   , AVG(avg_query_wait_time_ms) AS avg_query_wait_time_ms
-			   , SUM(w.total_query_wait_time_ms) AS total_query_wait_time_ms
-			FROM sys.query_store_wait_stats AS w
-				INNER JOIN #intervals AS rsti
-					ON rsti.runtime_stats_interval_id = w.runtime_stats_interval_id
-						AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
-			GROUP BY w.plan_id
-					 , w.wait_category_desc
+	SELECT w.plan_id,
+		CASE WHEN COALESCE(@object_id, @plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id,
+		w.wait_category_desc,
+		AVG(avg_query_wait_time_ms) AS avg_query_wait_time_ms,
+		SUM(w.total_query_wait_time_ms) AS total_query_wait_time_ms
+	FROM sys.query_store_wait_stats AS w
+		INNER JOIN #intervals AS rsti
+			ON rsti.runtime_stats_interval_id = w.runtime_stats_interval_id
+				AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
+	WHERE (@plan_id IS NULL OR w.plan_id = @plan_id)
+	GROUP BY w.plan_id,
+			CASE WHEN COALESCE(@object_id, @plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END,
+			w.wait_category_desc
 	) AS w
-	GROUP BY w.plan_id;'
+GROUP BY w.plan_id,
+w.runtime_stats_interval_id;';
 
 IF @numericVersion > 13 BEGIN
 	WHILE @countDBs <= @numDBs BEGIN 
-        SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs)
-		SET @sqlstringdb = REPLACE(@sql, '?', @dbname)
+		SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
+		SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
-        INSERT INTO #waits (database_name, plan_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
-	    EXECUTE sys.sp_executesql @sqlstmt = @sqlstringdb
-        
-        SET @countDBs = @countDBs + 1;
-    END;
-END
+		INSERT INTO #waits (database_name, plan_id, runtime_stats_interval_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
+		EXECUTE sys.sp_executesql @sqlstmt = @sqlstringdb
+			, @params		= N'@object_name nvarchar(257), @plan_id int'
+			, @object_name	= @object_name
+			, @plan_id		= @plan_id;
+		SET @countDBs = @countDBs + 1;
+	END;
+END;
 ELSE BEGIN
 	INSERT INTO #waits (plan_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
-	VALUES (0, 0, 0, N'n/a')
-END
+	VALUES (0, 0, 0, N'n/a');
+END;
 SET @countDBs = 1; -- Reset for next loops
 
 --SELECT * FROM #waits
@@ -270,16 +302,17 @@ SELECT DB_NAME()
 	FROM sys.query_store_runtime_stats AS rst
 	INNER JOIN #intervals AS rsti
 		ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id
-			AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT'
+			AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT';
 
 WHILE @countDBs <= @numDBs BEGIN 
-    SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs)
-	SET @sqlstringdb = REPLACE(@sql, '?', @dbname)
+	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
+	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
-    INSERT INTO #totals([database_name], [total_executions], [total_duration], [total_cpu], [total_reads], [total_physical_reads], [total_writes], [total_memory])
-	EXECUTE sys.sp_executesql @sqlstmt = @sqlstringdb
-        
-    SET @countDBs = @countDBs + 1;
+	INSERT INTO #totals([database_name], [total_executions], [total_duration], [total_cpu], [total_reads], [total_physical_reads], [total_writes], [total_memory])
+	EXECUTE sys.sp_executesql 
+		@sqlstmt = @sqlstringdb;
+
+	SET @countDBs = @countDBs + 1;
 END;
 SET @countDBs = 1; -- Reset for next loops
 
@@ -289,10 +322,10 @@ SET @countDBs = 1; -- Reset for next loops
 SET @sql = 'USE [?]
 
 -- Get some data before for performance
-DECLARE @objectId int = OBJECT_ID(@objectName)
+DECLARE @object_id int = OBJECT_ID(@object_name)
 
 -- object name is not correct
-IF @objectId IS NULL AND @objectName IS NOT NULL BEGIN
+IF @object_id IS NULL AND @object_name IS NOT NULL BEGIN
 	RAISERROR (''@object_name does not exist, please double check and run again'', 16, 1, 1) WITH NOWAIT;
 	RETURN;
 END;
@@ -300,6 +333,7 @@ END;
 SELECT TOP (@topNrows) 
 		CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
 		, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
+		, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id
 		, rst.plan_id
 		, q.query_id
 		, q.query_text_id
@@ -312,6 +346,7 @@ SELECT TOP (@topNrows)
 		, AVG(rst.avg_physical_io_reads) AS avg_physical_io_reads 
 		, AVG(rst.avg_logical_io_writes) AS avg_logical_io_writes
 		, AVG(rst.avg_query_max_used_memory) AS avg_query_max_used_memory
+		, AVG(rst.avg_rowcount) AS avg_rowcount
 		-- totals
 		, SUM(rst.count_executions * rst.avg_duration)			AS total_duration
 		, SUM(rst.count_executions * rst.avg_cpu_time)			AS total_cpu
@@ -319,6 +354,7 @@ SELECT TOP (@topNrows)
 		, SUM(rst.count_executions * rst.avg_physical_io_reads)	AS total_physical_reads
 		, SUM(rst.count_executions * rst.avg_logical_io_writes) AS total_writes
 		, SUM(rst.count_executions * rst.avg_query_max_used_memory) AS total_memory
+		, SUM(rst.count_executions * rst.avg_rowcount) AS total_rowcount
 		--, 		* 
 INTO #t
 	FROM sys.query_store_runtime_stats AS rst
@@ -329,28 +365,14 @@ INTO #t
 		INNER JOIN #intervals AS rsti
 			ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id 
 				AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
-	WHERE (@objectId	IS NULL OR q.object_id = @objectId) 
-		AND (@queryId	IS NULL OR q.query_id = @queryId)
-		AND (@planId	IS NULL OR rst.plan_id = @planId)
+	WHERE 1=1 
+		[WHERECLAUSE]		
 	GROUP BY rst.plan_id
 			, q.query_id
 			, q.query_text_id
 			, q.object_id
-			, CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END
-	ORDER BY  CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END
-			, CASE WHEN @OrderBy = ''total_executions''		COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_duration''			COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_duration) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_cpu_time''			COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_cpu_time) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_reads''			COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_logical_io_reads) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_physical_reads''	COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_physical_io_reads) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_writes''			COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_logical_io_writes) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_memory''			COLLATE DATABASE_DEFAULT	THEN AVG(rst.avg_query_max_used_memory) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_duration''		COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_duration) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_cpu''			COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_cpu_time) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_reads''			COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_logical_io_reads) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_physical_reads''	COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_physical_io_reads) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_writes''			COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_logical_io_writes) ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_memory''			COLLATE DATABASE_DEFAULT	THEN SUM(rst.count_executions * rst.avg_query_max_used_memory) ELSE NULL END DESC
+			, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END			
+	ORDER BY [ORDERCLAUSE]
 
 SELECT DB_NAME() AS database_name
 		, rst.start_time
@@ -367,6 +389,7 @@ SELECT DB_NAME() AS database_name
 		, rst.total_physical_reads
 		, rst.total_writes
 		, rst.total_memory
+		, rst.total_rowcount
 		, ISNULL(w.total_query_wait_time_ms					, 0) AS total_query_wait_time_ms			 
 		, ISNULL(w.total_query_wait_time_ms_breakdown		, ''-'') AS total_query_wait_time_ms_breakdown
 
@@ -377,6 +400,7 @@ SELECT DB_NAME() AS database_name
 		, ISNULL(CONVERT(BIGINT, rst.avg_physical_io_reads		), 0) AS avg_physical_io_reads
 		, ISNULL(CONVERT(BIGINT, rst.avg_logical_io_writes		), 0) AS avg_logical_io_writes
 		, ISNULL(CONVERT(BIGINT, rst.avg_query_max_used_memory	), 0) AS avg_query_max_used_memory
+		, ISNULL(CONVERT(BIGINT, rst.avg_rowcount				), 0) AS avg_rowcount
 		, ISNULL(CONVERT(BIGINT, w.avg_query_wait_time_ms		), 0) AS avg_query_wait_time_ms
 
 	-- percentages 
@@ -401,40 +425,96 @@ SELECT DB_NAME() AS database_name
 			ON qt.query_text_id = rst.query_text_id 
 		LEFT JOIN #waits AS w
 			ON w.plan_id = qp.plan_id
+				AND ISNULL(w.runtime_stats_interval_id, -1) = COALESCE(rst.runtime_stats_interval_id, w.runtime_stats_interval_id, -1)
 				AND w.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
 		OUTER APPLY (SELECT * FROM #totals WHERE #totals.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS t
 		OUTER APPLY (SELECT SUM(total_query_wait_time_ms) AS total_query_wait_time_ms FROM #waits WHERE #waits.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS tw
-	ORDER BY  CASE WHEN COALESCE(@objectId,@queryId,@planId) IS NULL THEN NULL ELSE rst.start_time END
-			, CASE WHEN @OrderBy = ''total_executions''	COLLATE DATABASE_DEFAULT THEN rst.total_executions ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_duration''		COLLATE DATABASE_DEFAULT THEN rst.avg_duration ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_cpu''			COLLATE DATABASE_DEFAULT THEN rst.avg_cpu_time ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_reads''		COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_reads ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''avg_writes''		COLLATE DATABASE_DEFAULT THEN rst.avg_logical_io_writes ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_duration''	COLLATE DATABASE_DEFAULT THEN rst.total_duration	ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_cpu''		COLLATE DATABASE_DEFAULT THEN rst.total_cpu ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_reads''		COLLATE DATABASE_DEFAULT THEN rst.total_reads ELSE NULL END DESC
-			, CASE WHEN @OrderBy = ''total_writes''		COLLATE DATABASE_DEFAULT THEN rst.total_writes ELSE NULL END DESC
-'
+	ORDER BY [ORDERCLAUSE2]
+';
 
 WHILE @countDBs <= @numDBs BEGIN 
-    SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs)
-	SET @sqlstringdb = REPLACE(@sql, '?', @dbname)
+	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
+	SET @whereclause = '';
+	SET @orderclause = '';
+	
+	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
+	
+	-- WHERE clause 
+	IF @object_name IS NOT NULL 
+	BEGIN
+		SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
+	END;
+	IF @query_id IS NOT NULL 
+	BEGIN
+		SET @whereclause += CHAR(10) + 'AND q.query_id = @query_id';
+	END;
+	IF @plan_id IS NOT NULL 
+	BEGIN
+		SET @whereclause += CHAR(10) + 'AND rst.plan_id = @plan_id';
+	END;
+
+	SET @sqlstringdb = REPLACE(@sqlstringdb, '[WHERECLAUSE]', @whereclause);
+
+	-- ORDER BY clause first query
+	SET @orderclause += CASE WHEN @object_name IS NULL AND COALESCE(@object_name,@query_id,@plan_id) IS NULL THEN '' ELSE 'start_time' END;
+	SET @orderclause += CASE @OrderBy
+							WHEN 'total_executions'		THEN ', SUM(rst.count_executions) DESC'
+							WHEN 'avg_duration'			THEN ', AVG(rst.avg_duration) DESC'
+							WHEN 'avg_cpu_time'			THEN ', AVG(rst.avg_cpu_time) DESC'
+							WHEN 'avg_reads'			THEN ', AVG(rst.avg_logical_io_reads) DESC'
+							WHEN 'avg_physical_reads'	THEN ', AVG(rst.avg_physical_io_reads) DESC'
+							WHEN 'avg_writes'			THEN ', AVG(rst.avg_logical_io_writes) DESC'
+							WHEN 'avg_memory'			THEN ', AVG(rst.avg_query_max_used_memory) DESC'
+							WHEN 'total_duration'		THEN ', SUM(rst.count_executions * rst.avg_duration) DESC'
+							WHEN 'total_cpu'			THEN ', SUM(rst.count_executions * rst.avg_cpu_time) DESC'
+							WHEN 'total_reads'			THEN ', SUM(rst.count_executions * rst.avg_logical_io_reads) DESC'
+							WHEN 'total_physical_reads'	THEN ', SUM(rst.count_executions * rst.avg_physical_io_reads) DESC'
+							WHEN 'total_writes'			THEN ', SUM(rst.count_executions * rst.avg_logical_io_writes) DESC'
+							WHEN 'total_memory'			THEN ', SUM(rst.count_executions * rst.avg_query_max_used_memory) DESC'
+							ELSE ''
+						END;
+	SET @orderclause = CASE WHEN LEFT(@orderclause, 1) <> ',' THEN @orderclause
+							ELSE RIGHT(@orderclause, LEN(@orderclause) - 1)
+						END;
+
+	SET @sqlstringdb = REPLACE(@sqlstringdb, '[ORDERCLAUSE]', @orderclause);	
+
+	-- ORDER BY clause second query 
+	SET @orderclause = '';
+	SET @orderclause += CASE WHEN @object_name IS NULL AND COALESCE(@query_id,@plan_id) IS NULL THEN '' ELSE 'rst.start_time' END;
+	SET @orderclause += CASE @OrderBy
+							WHEN 'total_executions' THEN ', rst.total_executions DESC'
+							WHEN 'avg_duration'		THEN ', rst.avg_duration DESC'
+							WHEN 'avg_cpu'			THEN ', rst.avg_cpu_time DESC'
+							WHEN 'avg_reads'		THEN ', rst.avg_logical_io_reads DESC'
+							WHEN 'avg_writes'		THEN ', rst.avg_logical_io_writes DESC'
+							WHEN 'total_duration'	THEN ', rst.total_duration DESC'
+							WHEN 'total_cpu'		THEN ', rst.total_cpu DESC'
+							WHEN 'total_reads'		THEN ', rst.total_reads DESC'
+							WHEN 'total_writes'		THEN ', rst.total_writes DESC'
+							ELSE ''
+						END;
+	SET @orderclause = CASE WHEN LEFT(@orderclause, 1) <> ',' THEN @orderclause
+							ELSE RIGHT(@orderclause, LEN(@orderclause) - 1)
+						END;
+
+	SET @sqlstringdb = REPLACE(@sqlstringdb, '[ORDERCLAUSE2]', @orderclause);	
 
 	INSERT INTO #output ([database_name], [start_time], [end_time], [query_id], [plan_id], [object_name]
-						, [total_executions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads], [total_writes], [total_memory], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
-						, [avg_duration_ms], [avg_cpu_time_ms], [avg_logical_io_reads], [avg_physical_io_reads], [avg_logical_io_writes], [avg_query_max_used_memory], [avg_query_wait_time_ms]
+						, [total_executions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads], [total_writes], [total_memory], [total_rowcount], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
+						, [avg_duration_ms], [avg_cpu_time_ms], [avg_logical_io_reads], [avg_physical_io_reads], [avg_logical_io_writes], [avg_query_max_used_memory], [avg_rowcount], [avg_query_wait_time_ms]
 						, [percentge_duration], [percentge_cpu], [percentge_reads], [percentge_physical_reads], [percentge_writes], [percentge_memory], [percentage_query_wait_time_ms]
 						, [query_sql_text], [query_plan])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt		= @sqlstringdb
-		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @objectName NVARCHAR(257), @queryId INT, @planId INT'
+		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @object_name NVARCHAR(257), @query_id INT, @plan_id INT'
 		, @topNrows		= @topNrows 
 		, @OrderBy		= @OrderBy
-		, @objectName	= @objectName
-		, @queryId		= @queryId
-		, @planId		= @planId
-        
-    SET @countDBs = @countDBs + 1;
+		, @object_name	= @object_name
+		, @query_id		= @query_id
+		, @plan_id		= @plan_id;
+		
+	SET @countDBs = @countDBs + 1;
 END;
 
 SELECT [database_name]
@@ -454,6 +534,7 @@ SELECT [database_name]
 		, CONVERT(decimal(15,2), [avg_logical_io_writes]	/ 128.) AS [avg_mb_written]
 		, [avg_query_max_used_memory]
 		, CONVERT(decimal(15,2), [avg_query_max_used_memory]/ 128.) AS [avg_mb_memory]
+		, [avg_rowcount]
 		, [avg_query_wait_time_ms]
 		, [total_duration_ms]
 		, [total_cpu_ms]
@@ -468,6 +549,7 @@ SELECT [database_name]
 		, [total_writes]
 		, [total_memory]
 		, CONVERT(decimal(15,2), [total_memory]	/ 128.) AS [total_mb_memory]
+		, [total_rowcount]
 		, [total_query_wait_time_ms]
 		, [total_query_wait_time_ms_breakdown]
 		, [percentge_duration]
@@ -480,7 +562,7 @@ SELECT [database_name]
 		, ISNULL(TRY_CONVERT(xml, '<!--' + REPLACE(query_sql_text, '--', '/* this line was commented out */') + '-->'), query_sql_text) AS query_sql_text
 		, ISNULL(TRY_CONVERT(xml, query_plan), query_plan) AS query_plan
 FROM #output
-ORDER BY [Id]
+ORDER BY [Id];
 
 OnError:
 GO
