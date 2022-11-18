@@ -36,6 +36,8 @@ GO
 --									- Added parameter parameter @GenerateScript to print out all statments to copy paste
 --									- Added validation for @NewDataPath and @NewLogPath
 --									- Added functionallity to enable/disable xp_cmdshell to move files
+--				18/11/2022	RAG	Changes:
+--									- Changed the way I print the script to copy/paste
 --
 -- =============================================
 -- =============================================
