@@ -60,6 +60,10 @@ GO
 --									- Added avg_rowcount and total_rowcount
 --				17/10/2022	RAG	- Changes
 --									- Changed some parts to dynamic SQL for performance
+--				28/11/2022	RAG	- Changes
+--									- Added total_cpu_hhmmss and total_duration_hhmmss in human readable time format
+--				06/08/2022	RAG	- Changes
+--									- Added dynamic parts to the query that get waits to filter by plan_id, query_id and object_name
 --
 -- SELECT * FROM sys.databases WHERE is_query_store_on = 1 ORDER BY name
 -- =============================================
@@ -68,7 +72,7 @@ DECLARE @dbname	    sysname			= NULL;
 DECLARE @dateFrom	datetime2		= DATEADD(DAY, -8, GETDATE());
 DECLARE @dateTo		datetime2		= GETDATE();
 DECLARE @topNrows	int				= 10;
-DECLARE @object_name nvarchar(257)	= NULL;
+DECLARE @object_name nvarchar(261)	= NULL;
 DECLARE @query_id	int				= NULL;
 DECLARE @plan_id	int				= NULL;
 DECLARE @OrderBy	sysname			= 'total_cpu';
@@ -84,8 +88,8 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 DECLARE @sqlstringdb	nvarchar(MAX) 
 		, @countDBs		int = 1 
 		, @numDBs		int 
+		, @extrajoin    nvarchar(MAX) = ''
 		, @whereclause  nvarchar(MAX) = ''
-		, @groupbyclause nvarchar(MAX) = ''
 		, @orderclause  nvarchar(MAX) = '';
 
 DECLARE @databases table  
@@ -98,13 +102,13 @@ IF OBJECT_ID('tempdb..#totals')		IS NOT NULL DROP TABLE #totals;
 IF OBJECT_ID('tempdb..#output')		IS NOT NULL DROP TABLE #output;
 
 CREATE TABLE #intervals(
-	[database_name]					sysname NULL
+	[database_id]					int NULL
 	, [runtime_stats_interval_id]	bigint	NULL
 	, [start_time]					datetimeoffset NULL
 	, [end_time]					datetimeoffset NULL);
 
 CREATE TABLE #waits(
-	[database_name]                         sysname NULL
+	[database_id]							int NULL
 	, [plan_id]								bigint	NULL
 	, [runtime_stats_interval_id]			bigint	NULL
 	, [avg_query_wait_time_ms]				float	NULL
@@ -112,7 +116,7 @@ CREATE TABLE #waits(
 	, [total_query_wait_time_ms_breakdown]	nvarchar(4000) NULL);
 
 CREATE TABLE #totals(
-	[database_name]			sysname NULL
+	[database_id]				int NULL
 	, [total_executions]		bigint NULL
 	, [total_duration]			float NULL
 	, [total_cpu]				float NULL
@@ -199,12 +203,12 @@ IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu', 'avg_reads', 
 - total_writes		
 
 Please Choose on of them and run it again', 16, 0) WITH NOWAIT;
-	GOTO OnError;
+	--GOTO OnError;
 END;
 
 -- Get all the intervals within the DateFrom and DateTo specified
 DECLARE @sql nvarchar(MAX) = 'USE [?]
-	SELECT DB_NAME()
+	SELECT DB_ID()
 			, runtime_stats_interval_id
 			, start_time
 			, end_time
@@ -216,7 +220,7 @@ WHILE @countDBs <= @numDBs BEGIN
 	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
 	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
-	INSERT INTO #intervals ([database_name], [runtime_stats_interval_id], [start_time], [end_time])
+	INSERT INTO #intervals ([database_id], [runtime_stats_interval_id], [start_time], [end_time])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt	= @sqlstringdb
 		, @params	= N'@dateFrom DATETIME2, @dateTo DATETIME2'
@@ -240,7 +244,7 @@ IF @object_id IS NULL AND @object_name IS NOT NULL BEGIN
 	RETURN;
 END;
 
-SELECT DB_NAME(),
+SELECT DB_ID(),
 	w.plan_id,
 	w.runtime_stats_interval_id,
 	AVG(w.avg_query_wait_time_ms) AS avg_query_wait_time_ms,
@@ -257,8 +261,11 @@ SELECT DB_NAME(),
 	FROM sys.query_store_wait_stats AS w
 		INNER JOIN #intervals AS rsti
 			ON rsti.runtime_stats_interval_id = w.runtime_stats_interval_id
-				AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
-	WHERE (@plan_id IS NULL OR w.plan_id = @plan_id)
+				AND rsti.database_id = DB_ID()
+		[EXTRA_JOIN]
+	WHERE 1=1 
+		[WHERECLAUSE]	
+
 	GROUP BY w.plan_id,
 			CASE WHEN COALESCE(@object_id, @plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END,
 			w.wait_category_desc
@@ -271,11 +278,46 @@ IF @numericVersion > 13 BEGIN
 		SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
 		SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
-		INSERT INTO #waits (database_name, plan_id, runtime_stats_interval_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
+		SET @extrajoin = '';
+		SET @whereclause = '';
+		SET @orderclause = '';
+	
+		SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
+	
+		IF @object_name IS NOT NULL OR @query_id IS NOT NULL
+		BEGIN
+			SET @extrajoin = CHAR(10) +'INNER JOIN sys.query_store_plan AS qp' + 
+								CHAR(10) +'	ON qp.plan_id = w.plan_id'  
+		END
+		IF @object_name IS NOT NULL 
+		BEGIN
+			SET @extrajoin += CHAR(10) +'INNER JOIN sys.query_store_query AS q' + 
+								CHAR(10) +'	ON q.query_id = qp.query_id';
+		END
+		SET @sqlstringdb = REPLACE(@sqlstringdb, '[EXTRA_JOIN]', @extrajoin);
+
+		-- WHERE clause 
+		IF @query_id IS NOT NULL 
+		BEGIN
+			SET @whereclause += CHAR(10) + 'AND qp.query_id = @query_id';
+		END;
+		IF @plan_id IS NOT NULL 
+		BEGIN
+			SET @whereclause += CHAR(10) + 'AND w.plan_id = @plan_id';
+		END;
+		IF @object_name IS NOT NULL 
+		BEGIN
+			SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
+		END;
+
+		SET @sqlstringdb = REPLACE(@sqlstringdb, '[WHERECLAUSE]', @whereclause);
+
+		INSERT INTO #waits (database_id, plan_id, runtime_stats_interval_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
 		EXECUTE sys.sp_executesql @sqlstmt = @sqlstringdb
-			, @params		= N'@object_name nvarchar(257), @plan_id int'
+			, @params		= N'@object_name nvarchar(261), @plan_id int, @query_id int'
 			, @object_name	= @object_name
-			, @plan_id		= @plan_id;
+			, @plan_id		= @plan_id
+			, @query_id		= @query_id;
 		SET @countDBs = @countDBs + 1;
 	END;
 END;
@@ -287,11 +329,10 @@ SET @countDBs = 1; -- Reset for next loops
 
 --SELECT * FROM #waits
 
-
 -- Get the totals for the period defined.
 SET @sql = 'USE [?]
 
-SELECT DB_NAME()
+SELECT DB_ID()
 		, SUM(rst.count_executions) AS total_executions
 		, SUM(rst.count_executions * rst.avg_duration) AS total_duration
 		, SUM(rst.count_executions * rst.avg_cpu_time) AS total_cpu
@@ -302,13 +343,13 @@ SELECT DB_NAME()
 	FROM sys.query_store_runtime_stats AS rst
 	INNER JOIN #intervals AS rsti
 		ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id
-			AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT';
+			AND rsti.database_id = DB_ID()';
 
 WHILE @countDBs <= @numDBs BEGIN 
 	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
 	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 
-	INSERT INTO #totals([database_name], [total_executions], [total_duration], [total_cpu], [total_reads], [total_physical_reads], [total_writes], [total_memory])
+	INSERT INTO #totals([database_id], [total_executions], [total_duration], [total_cpu], [total_reads], [total_physical_reads], [total_writes], [total_memory])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt = @sqlstringdb;
 
@@ -320,6 +361,47 @@ SET @countDBs = 1; -- Reset for next loops
 
 -- Get the final output for the period defined.
 SET @sql = 'USE [?]
+
+IF OBJECT_ID(''tempdb..#db_intervals'')	IS NOT NULL DROP TABLE #db_intervals;
+IF OBJECT_ID(''tempdb..#db_waits'')		IS NOT NULL DROP TABLE #db_waits;
+IF OBJECT_ID(''tempdb..#db_totals'')	IS NOT NULL DROP TABLE #db_totals;
+
+CREATE TABLE #db_intervals(
+	[database_id]					int NULL
+	, [runtime_stats_interval_id]	bigint	NULL
+	, [start_time]					datetimeoffset NULL
+	, [end_time]					datetimeoffset NULL);
+
+CREATE TABLE #db_waits(
+	[database_id]							int NULL
+	, [plan_id]								bigint	NULL
+	, [runtime_stats_interval_id]			bigint	NULL
+	, [avg_query_wait_time_ms]				float	NULL
+	, [total_query_wait_time_ms]			bigint	NULL
+	, [total_query_wait_time_ms_breakdown]	nvarchar(4000) NULL);
+
+CREATE TABLE #db_totals(
+	[database_id]				int NULL
+	, [total_executions]		bigint NULL
+	, [total_duration]			float NULL
+	, [total_cpu]				float NULL
+	, [total_reads]				float NULL
+	, [total_physical_reads]	float NULL
+	, [total_writes]			float NULL
+	, [total_memory]			float NULL
+);
+
+DELETE #intervals
+OUTPUT deleted.* INTO #db_intervals
+WHERE database_id = DB_ID();
+
+DELETE #waits
+OUTPUT deleted.* INTO #db_waits
+WHERE database_id = DB_ID();
+
+DELETE #totals
+OUTPUT deleted.* INTO #db_totals
+WHERE database_id = DB_ID();
 
 -- Get some data before for performance
 DECLARE @object_id int = OBJECT_ID(@object_name)
@@ -335,9 +417,9 @@ SELECT TOP (@topNrows)
 		, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
 		, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id
 		, rst.plan_id
-		, q.query_id
-		, q.query_text_id
-		, q.object_id
+		--, q.query_id
+		--, q.query_text_id
+		--, q.object_id
 		, SUM(rst.count_executions) AS total_executions
 		-- averages
 		, AVG(rst.avg_duration) AS avg_duration		   
@@ -357,20 +439,18 @@ SELECT TOP (@topNrows)
 		, SUM(rst.count_executions * rst.avg_rowcount) AS total_rowcount
 		--, 		* 
 INTO #t
-	FROM sys.query_store_runtime_stats AS rst
-		INNER JOIN sys.query_store_plan AS qp
-			ON qp.plan_id = rst.plan_id
-		INNER JOIN sys.query_store_query AS q
-			ON q.query_id = qp.query_id
-		INNER JOIN #intervals AS rsti
+	FROM sys.query_store_runtime_stats AS rst		
+		INNER JOIN #db_intervals AS rsti
 			ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id 
-				AND rsti.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
+				AND rsti.database_id = DB_ID()
+		[EXTRA_JOIN]
 	WHERE 1=1 
-		[WHERECLAUSE]		
+		[WHERECLAUSE]	
+		
 	GROUP BY rst.plan_id
-			, q.query_id
-			, q.query_text_id
-			, q.object_id
+			--, q.query_id
+			--, q.query_text_id
+			--, q.object_id
 			, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END			
 	ORDER BY [ORDERCLAUSE]
 
@@ -379,7 +459,7 @@ SELECT DB_NAME() AS database_name
 		, rst.end_time
 		, qp.query_id
 		, rst.plan_id
-		, ISNULL(OBJECT_SCHEMA_NAME(rst.object_id) + ''.'' + OBJECT_NAME(rst.object_id), ''-'') AS object_name
+		, ISNULL(OBJECT_SCHEMA_NAME(q.object_id) + ''.'' + OBJECT_NAME(q.object_id), ''-'') AS object_name
 		, rst.total_executions
 	
 	-- totals
@@ -421,36 +501,51 @@ SELECT DB_NAME() AS database_name
 	FROM #t AS rst
 		INNER JOIN sys.query_store_plan AS qp
 			ON qp.plan_id = rst.plan_id
+		INNER JOIN sys.query_store_query AS q
+			ON q.query_id = qp.query_id
 		INNER JOIN sys.query_store_query_text AS qt
-			ON qt.query_text_id = rst.query_text_id 
-		LEFT JOIN #waits AS w
+			ON qt.query_text_id = q.query_text_id 
+		LEFT JOIN #db_waits AS w
 			ON w.plan_id = qp.plan_id
 				AND ISNULL(w.runtime_stats_interval_id, -1) = COALESCE(rst.runtime_stats_interval_id, w.runtime_stats_interval_id, -1)
-				AND w.database_name = DB_NAME() COLLATE DATABASE_DEFAULT
-		OUTER APPLY (SELECT * FROM #totals WHERE #totals.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS t
-		OUTER APPLY (SELECT SUM(total_query_wait_time_ms) AS total_query_wait_time_ms FROM #waits WHERE #waits.database_name = DB_NAME() COLLATE DATABASE_DEFAULT) AS tw
+				AND w.database_id = DB_ID()
+		OUTER APPLY (SELECT * FROM #db_totals AS t WHERE t.database_id = DB_ID()) AS t
+		OUTER APPLY (SELECT SUM(total_query_wait_time_ms) AS total_query_wait_time_ms FROM #db_waits AS w WHERE w.database_id = DB_ID()) AS tw
 	ORDER BY [ORDERCLAUSE2]
 ';
 
 WHILE @countDBs <= @numDBs BEGIN 
 	SET @dbname = (SELECT dbname FROM @databases WHERE ID = @countDBs);
+	SET @extrajoin = '';
 	SET @whereclause = '';
 	SET @orderclause = '';
 	
 	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 	
-	-- WHERE clause 
+	IF @object_name IS NOT NULL OR @query_id IS NOT NULL OR @plan_id IS NOT NULL
+	BEGIN
+		SET @extrajoin = CHAR(10) +'INNER JOIN sys.query_store_plan AS qp' + 
+							CHAR(10) +'	ON qp.plan_id = rst.plan_id'  
+	END
 	IF @object_name IS NOT NULL 
 	BEGIN
-		SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
-	END;
+		SET @extrajoin += CHAR(10) +'INNER JOIN sys.query_store_query AS q' + 
+							CHAR(10) +'	ON q.query_id = qp.query_id';
+	END
+	SET @sqlstringdb = REPLACE(@sqlstringdb, '[EXTRA_JOIN]', @extrajoin);
+
+	-- WHERE clause 
 	IF @query_id IS NOT NULL 
 	BEGIN
-		SET @whereclause += CHAR(10) + 'AND q.query_id = @query_id';
+		SET @whereclause += CHAR(10) + 'AND qp.query_id = @query_id';
 	END;
 	IF @plan_id IS NOT NULL 
 	BEGIN
 		SET @whereclause += CHAR(10) + 'AND rst.plan_id = @plan_id';
+	END;
+	IF @object_name IS NOT NULL 
+	BEGIN
+		SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
 	END;
 
 	SET @sqlstringdb = REPLACE(@sqlstringdb, '[WHERECLAUSE]', @whereclause);
@@ -499,7 +594,8 @@ WHILE @countDBs <= @numDBs BEGIN
 						END;
 
 	SET @sqlstringdb = REPLACE(@sqlstringdb, '[ORDERCLAUSE2]', @orderclause);	
-
+	
+	-- SELECT @sqlstringdb;
 	INSERT INTO #output ([database_name], [start_time], [end_time], [query_id], [plan_id], [object_name]
 						, [total_executions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads], [total_writes], [total_memory], [total_rowcount], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
 						, [avg_duration_ms], [avg_cpu_time_ms], [avg_logical_io_reads], [avg_physical_io_reads], [avg_logical_io_writes], [avg_query_max_used_memory], [avg_rowcount], [avg_query_wait_time_ms]
@@ -507,7 +603,7 @@ WHILE @countDBs <= @numDBs BEGIN
 						, [query_sql_text], [query_plan])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt		= @sqlstringdb
-		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @object_name NVARCHAR(257), @query_id INT, @plan_id INT'
+		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @object_name nvarchar(261), @query_id INT, @plan_id INT'
 		, @topNrows		= @topNrows 
 		, @OrderBy		= @OrderBy
 		, @object_name	= @object_name
@@ -524,6 +620,19 @@ SELECT [database_name]
 		, [plan_id]
 		, [object_name]
 		, [total_executions]
+
+		, [total_duration_ms]
+		, ISNULL(NULLIF (CONVERT(VARCHAR(24), ([total_duration_ms]/1000) / 3600 / 24 ),'0') + '.', '') + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_duration_ms]/1000) / 3600 % 24 ), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_duration_ms]/1000) / 60 % 60), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_duration_ms]/1000) % 60), 2) AS [total_duration_hhmmss]
+		
+		, [total_cpu_ms]
+		, ISNULL(NULLIF (CONVERT(VARCHAR(24), ([total_cpu_ms]/1000) / 3600 / 24 ),'0') + '.', '') + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_cpu_ms]/1000) / 3600 % 24 ), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_cpu_ms]/1000) / 60 % 60), 2) + ':' + 
+			RIGHT('00' + CONVERT(VARCHAR(24), ([total_cpu_ms]/1000) % 60), 2) AS [total_cpu_hhmmss]
+
 		, [avg_duration_ms]
 		, [avg_cpu_time_ms]
 		, [avg_logical_io_reads]
@@ -536,8 +645,6 @@ SELECT [database_name]
 		, CONVERT(decimal(15,2), [avg_query_max_used_memory]/ 128.) AS [avg_mb_memory]
 		, [avg_rowcount]
 		, [avg_query_wait_time_ms]
-		, [total_duration_ms]
-		, [total_cpu_ms]
 		, [total_reads]
 		, CONVERT(decimal(15,2), [total_reads]	/ 128.				) AS [total_mb_read]
 		, CONVERT(decimal(15,2), [total_reads]	/ 128. / 1024		) AS [total_gb_read]
@@ -560,6 +667,7 @@ SELECT [database_name]
 		, [percentge_memory]
 		, [percentage_query_wait_time_ms]
 		, ISNULL(TRY_CONVERT(xml, '<!--' + REPLACE(query_sql_text, '--', '/* this line was commented out */') + '-->'), query_sql_text) AS query_sql_text
+		-- , '"' + REPLACE(query_sql_text, '"', '&quote;') + '"' AS query_sql_text -- use this to copy paste into a spreadsheet
 		, ISNULL(TRY_CONVERT(xml, query_plan), query_plan) AS query_plan
 FROM #output
 ORDER BY [Id];
