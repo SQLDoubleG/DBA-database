@@ -35,6 +35,7 @@ GO
 --				2020-04-08 RAG - Added total size for each of the columns
 --				14/01/2021 RAG - Added parameter @EngineEdition
 --				11/02/2021 RAG - Added parameter @includeSystem to include system databases
+--				01/09/2022 RAG - Added [FreePercent]
 --
 -- =============================================
 DECLARE @dbname				SYSNAME 
@@ -137,6 +138,7 @@ SELECT  ISNULL([db_name], '***Total***') AS [db_name]
 		, CONVERT(DECIMAL(10,2), SUM([DataSizeMB])/1024.) AS [DataSizeGB]
 		, CONVERT(DECIMAL(10,2), SUM(([DataSizeMB]-[FreeMB]))/1024.) AS [UsedGB]
 		, CONVERT(DECIMAL(10,2), SUM([FreeMB])/1024.) AS [FreeGB]
+		, CONVERT(DECIMAL(10,0), SUM([FreeMB]) * 100 / SUM([DataSizeMB])) AS [FreePercent]
 		, CONVERT(DECIMAL(10,2), SUM(LogSizeMB)/1024.) AS LogSizeGB
 		, CONVERT(DECIMAL(10,2), SUM(FilestreamSizeMB)/1024.) AS FilestreamSizeGB
 		, CONVERT(DECIMAL(10,2), SUM(FulltextSizeMB)/1024.) AS FulltextSizeGB

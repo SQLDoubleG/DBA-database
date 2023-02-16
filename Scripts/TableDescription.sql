@@ -59,6 +59,8 @@ GO
 --									- Split Total User Access into User Writes / User Reads
 --				21/10/2021	RAG	- Add FK DELETE and UPDATE actions
 --				08/02/2022	RAG	- Add ColIndexes to display indexes that include this column 
+--				10/06/2022	RAG	- Added scale for data type datetime2(n) 
+--								- Added empty TRY-CATCH blocks to avoid errors on AG non readable secondaries
 ----------------------------------------------------------------------------------------
 --				 
 -- ============================================= 
@@ -352,12 +354,16 @@ WHILE @countDBs <= @numDBs BEGIN
 	') 
 	-- SELECT @sqlstring
 	-- Insert all tables with their descriptions 
+	BEGIN TRY
 	EXECUTE sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME'
 				, @schemaName = @schemaName  
 				, @tableName = @tableName 
-	
+	END TRY
+	BEGIN CATCH
+	END CATCH
+
 	IF @onlyTablesList = 0 BEGIN  
 
 		SET @sqlstring = CASE WHEN @EngineEdition <> 8 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
@@ -395,6 +401,7 @@ WHILE @countDBs <= @numDBs BEGIN
 							WHEN ty.user_type_id IN (165,167,231) AND c.max_length = -1 THEN ''Unlimited'' 
 							WHEN ty.user_type_id IN (231,239) THEN CONVERT(VARCHAR,c.max_length/2) 
 							WHEN ty.user_type_id IN (165,167,173,175,231,239) THEN CONVERT(VARCHAR,c.max_length) 
+							WHEN ty.user_type_id IN (42) THEN CONVERT(VARCHAR,c.scale) 
 							ELSE '''' 
 						END 
 					, CASE WHEN c.is_identity = 1 THEN ''Yes''  
@@ -479,12 +486,17 @@ WHILE @countDBs <= @numDBs BEGIN
 		')
 		PRINT @sqlstring 
 		-- Insert all Columns for all tables			 
+		BEGIN TRY
 		EXECUTE sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME, @columnName SYSNAME'
 				, @schemaName = @schemaName  
 				, @tableName = @tableName 
 				, @columnName = @columnName 
+		END TRY
+		BEGIN CATCH
+		END CATCH
+		
 		END -- IF @onlyTablesList = 0  
 
 	SET @countDBs += 1	 
