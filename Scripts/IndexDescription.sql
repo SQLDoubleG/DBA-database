@@ -39,6 +39,7 @@ GO
 --                                  - Output will display only if the index is partitioned or not
 --				04/11/2021 RAG	- Changes:
 --									- Added @indexName to filter by index name
+--									- Added empty lines on scripts
 --				
 -- =============================================
 DECLARE 
@@ -191,18 +192,17 @@ WHILE @countDB <= @numDB BEGIN
 					ISNULL( (CASE WHEN ix.has_filter = 1 THEN ''WHERE '' + ix.filter_definition + CHAR(10) ELSE NULL END), '''' ) +
 
 					N''WITH ('' + 
-						CHAR(10) +
-						N''PAD_INDEX = '' + CASE WHEN ix.is_padded = 1 THEN N''ON'' ELSE N''OFF'' END +
-						CASE WHEN ix.fill_factor = 0 THEN N'''' ELSE N'', FILLFACTOR = '' + CONVERT(NVARCHAR(3),ix.fill_factor) END + 
-						N'', SORT_IN_TEMPDB = '' + @sortInTempdb + 
-						CASE WHEN ix.type IN (1, 2) THEN N'', IGNORE_DUP_KEY = '' + CASE WHEN ix.ignore_dup_key = 1 THEN N''ON'' ELSE N''OFF'' END ELSE N'''' END +
-						N'', STATISTICS_NORECOMPUTE = '' + CASE WHEN DATABASEPROPERTYEX(DB_ID(), ''IsAutoUpdateStatistics'') = 1 THEN N''ON'' ELSE ''OFF'' END +
-						N'', DROP_EXISTING = '' + @dropExisting + 
-						CASE WHEN ix.type IN (1, 2) AND SERVERPROPERTY(''EngineEdition'') = 3 THEN N'', ONLINE = '' + @online ELSE N'''' END + 						
-						N'', ALLOW_ROW_LOCKS = '' + CASE WHEN ix.allow_row_locks = 1 THEN N''ON'' ELSE N''OFF'' END +
-						N'', ALLOW_PAGE_LOCKS = '' + CASE WHEN ix.allow_page_locks = 1 THEN N''ON'' ELSE N''OFF'' END +
-						CASE WHEN @maxdop <> 0 THEN N'', MAXDOP = '' + CONVERT(NVARCHAR,@maxdop) ELSE N'''' END + 
-						CASE WHEN p.data_compression <> 0 THEN N'', DATA_COMPRESSION = '' + p.data_compression_desc COLLATE DATABASE_DEFAULT ELSE '''' END + 
+						CHAR(10) + N''PAD_INDEX = '' + CASE WHEN ix.is_padded = 1 THEN N''ON'' ELSE N''OFF'' END +
+						CHAR(10) + N'', FILLFACTOR = '' + CONVERT(NVARCHAR(3),CASE WHEN ix.fill_factor = 0 THEN 100 ELSE ix.fill_factor END) + 
+						CHAR(10) + N'', SORT_IN_TEMPDB = '' + @sortInTempdb + 
+						CHAR(10) + CASE WHEN ix.type IN (1, 2) THEN N'', IGNORE_DUP_KEY = '' + CASE WHEN ix.ignore_dup_key = 1 THEN N''ON'' ELSE N''OFF'' END ELSE N'''' END +
+						CHAR(10) + N'', STATISTICS_NORECOMPUTE = '' + CASE WHEN DATABASEPROPERTYEX(DB_ID(), ''IsAutoUpdateStatistics'') = 1 THEN N''ON'' ELSE ''OFF'' END +
+						CHAR(10) + N'', DROP_EXISTING = '' + @dropExisting + 
+									CASE WHEN ix.type IN (1, 2) AND SERVERPROPERTY(''EngineEdition'') = 3 THEN CHAR(10) + N'', ONLINE = '' + @online ELSE N'''' END + 						
+						CHAR(10) + N'', ALLOW_ROW_LOCKS = '' + CASE WHEN ix.allow_row_locks = 1 THEN N''ON'' ELSE N''OFF'' END +
+						CHAR(10) + N'', ALLOW_PAGE_LOCKS = '' + CASE WHEN ix.allow_page_locks = 1 THEN N''ON'' ELSE N''OFF'' END +
+									 CASE WHEN @maxdop <> 0 THEN CHAR(10) + N'', MAXDOP = '' + CONVERT(NVARCHAR,@maxdop) ELSE N'''' END + 
+						CHAR(10) + CASE WHEN p.data_compression <> 0 THEN N'', DATA_COMPRESSION = '' + p.data_compression_desc COLLATE DATABASE_DEFAULT ELSE '''' END + 
 						CHAR(10) +
 					N'')'' + 
 					

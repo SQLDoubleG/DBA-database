@@ -49,6 +49,7 @@ GO
 --				22/07/2020 RAG Changes:
 --								- Added parameter @path to find files in a location, can use wildcards
 --								- Changed the [ShrinkFile] column to not shrink if the log file is smaller than 1GB
+--				18/07/2022 RAG Applied formatting
 --
 -- =============================================
 -- =============================================
@@ -57,13 +58,13 @@ GO
 USE tempdb
 GO
 CREATE FUNCTION [dbo].[getDriveFromFullPath](
-	@path NVARCHAR(256)
+	@path nvarchar(256)
 )
-RETURNS SYSNAME
+RETURNS sysname
 AS
 BEGIN
 
-	DECLARE @slashPos	INT		= CASE 
+	DECLARE @slashPos	int		= CASE 
 									WHEN CHARINDEX( ':', @path ) > 0 THEN CHARINDEX( ':', @path ) 
 									WHEN CHARINDEX( '\', @path ) > 0 THEN CHARINDEX( '\', @path ) -- '
 									ELSE NULL 
@@ -74,22 +75,22 @@ BEGIN
 END
 GO
 CREATE FUNCTION [dbo].[getFileNameFromPath](
-	@path NVARCHAR(256)
+	@path nvarchar(256)
 )
-RETURNS SYSNAME
+RETURNS sysname
 AS
 BEGIN
 
-	DECLARE @slashPos	INT		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END --'
+	DECLARE @slashPos	int		= CASE WHEN CHARINDEX( '\', REVERSE(@path) ) > 0 THEN CHARINDEX( '\', REVERSE(@path) ) -1 ELSE LEN(@path) END --'
 	RETURN RIGHT( @path, @slashPos ) 
 END
 GO
 -- =============================================
 -- END of Dependencies
 -- =============================================
-DECLARE	@dbname		SYSNAME = NULL
-		, @fileType	SYSNAME = NULL -- 'LOG' 'ROWS'
-		, @path		SYSNAME = NULL -- 'Z:%'
+DECLARE	@dbname		sysname = NULL
+		, @fileType	sysname = NULL -- 'LOG' 'ROWS'
+		, @path		sysname = NULL -- 'Z:%'
 
 IF OBJECT_ID('tempdb..#dbs')			IS NOT NULL DROP TABLE #dbs
 IF OBJECT_ID('tempdb..#filesUsage')		IS NOT NULL DROP TABLE #filesUsage
@@ -97,30 +98,30 @@ IF OBJECT_ID('tempdb..#volume_stats')	IS NOT NULL DROP TABLE #volume_stats
 
 -- Databases we will loop through
 CREATE TABLE #dbs (
-	ID					INT IDENTITY(1,1)
-	, database_id		INT
-	, database_name		SYSNAME)
+	ID					int IDENTITY(1,1)
+	, database_id		int
+	, database_name		sysname)
 
 -- To hold the results of files usage
 CREATE TABLE #filesUsage (
-	database_id				INT
-	, [file_id]				INT
-	, [logical_name]		SYSNAME
-	, [data_space_id]		INT
-	, [type_desc]			SYSNAME
-	, [filegroup]			SYSNAME		NULL
-	, [is_FG_readonly]		VARCHAR(3)	NULL
-	, [max_size]			INT
-	, [growth]				INT
-	, [is_percent_growth]	BIT
-	, [physical_name]		NVARCHAR(512)
-	, [size]				BIGINT
-	, [spaceUsed]			BIGINT		NULL)
+	database_id				int
+	, [file_id]				int
+	, [logical_name]		sysname
+	, [data_space_id]		int
+	, [type_desc]			sysname
+	, [filegroup]			sysname		NULL
+	, [is_FG_readonly]		varchar(3)	NULL
+	, [max_size]			int
+	, [growth]				int
+	, [is_percent_growth]	bit
+	, [physical_name]		nvarchar(512)
+	, [size]				bigint
+	, [spaceUsed]			bigint		NULL)
 
-DECLARE @db				SYSNAME = NULL
-		, @countDBs		INT = 1
-		, @numDBs		INT
-		, @sqlstring	NVARCHAR(4000)
+DECLARE @db				sysname = NULL
+		, @countDBs		int = 1
+		, @numDBs		int
+		, @sqlstring	nvarchar(4000)
 
 IF ISNULL(@fileType, '') NOT IN ('ROWS', 'LOG', 'FILESTREAM', 'FULLTEXT', '') BEGIN
 	RAISERROR ('The parameter @fileType accepts only one of the following values: ROWS, LOG, FILESTREAM, FULLTEXT or NULL', 16, 0 ,0)
@@ -130,14 +131,14 @@ END
 -- Get volume statistics
 -- Get one pair database-file per Drive
 ;WITH cte AS(
-	SELECT tempdb.dbo.getDriveFromFullPath(physical_name) AS Drive
-			, MIN(database_id) AS database_id
+	SELECT tempdb.dbo.getDriveFromFullPath(mf.physical_name) AS Drive
+			, MIN(mf.database_id) AS database_id
 			, (SELECT MIN(file_id) AS file_id
 					FROM master.sys.master_files 
 					WHERE database_id = MIN(mf.database_id) 
 						AND tempdb.dbo.getDriveFromFullPath(physical_name) = tempdb.dbo.getDriveFromFullPath(mf.physical_name)) AS file_id
 		FROM master.sys.master_files AS mf
-		GROUP BY tempdb.dbo.getDriveFromFullPath(physical_name)
+		GROUP BY tempdb.dbo.getDriveFromFullPath(mf.physical_name)
 )
 
 SELECT SERVERPROPERTY('MachineName') AS ServerName
@@ -148,7 +149,7 @@ SELECT SERVERPROPERTY('MachineName') AS ServerName
 		, vs.available_bytes / 1024 / 1024 AS FreeMB
 	INTO #volume_stats
 	FROM cte 
-		CROSS APPLY master.sys.dm_os_volume_stats (cte.database_id, file_id) AS vs
+		CROSS APPLY master.sys.dm_os_volume_stats (cte.database_id, cte.file_id) AS vs
 
 -- Get files info from sys.master_files to get also from databases not ONLINE
 INSERT INTO #filesUsage (database_id
@@ -213,7 +214,7 @@ WHILE @countDBs <= @numDBs BEGIN
 			WHERE database_id = DB_ID()									
 	'
 	BEGIN TRY
-		EXEC sp_executesql @sqlstring
+		EXEC sys.sp_executesql @stmt = @sqlstring
 	END TRY
 	BEGIN CATCH
 	END CATCH
@@ -224,40 +225,40 @@ END
 SELECT	f.database_id
 		, f.file_id
 		, DB_NAME(f.database_id) AS database_name
-		, f.[logical_name]
+		, f.logical_name
 		, f.type_desc
-		, f.[filegroup]
-		, f.[is_FG_readonly]
-		, CONVERT( DECIMAL(10,2), (f.size * 8. / 1024), 0 ) AS size_mb
-		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS used_mb
-		, CONVERT( DECIMAL(10,2), (f.size * 8. / 1024), 0 ) -
-			CONVERT( DECIMAL(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS free_mb
-		, CONVERT( DECIMAL(10,2), (f.spaceUsed * 100. / f.size) ) AS percentage_used
+		, f.filegroup
+		, f.is_FG_readonly
+		, CONVERT( decimal(10,2), (f.size * 8. / 1024), 0 ) AS size_mb
+		, CONVERT( decimal(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS used_mb
+		, CONVERT( decimal(10,2), (f.size * 8. / 1024), 0 ) -
+			CONVERT( decimal(10,2), (f.spaceUsed * 8. / 1024), 0 ) AS free_mb
+		, CONVERT( decimal(10,2), (f.spaceUsed * 100. / f.size) ) AS percentage_used
 		, CASE WHEN f.growth = 0 THEN 'None'
 			ELSE 
 				'By ' + 
 				CASE 
-					WHEN is_percent_growth = 1 THEN CONVERT(VARCHAR,growth) + '%'
-					ELSE CONVERT(VARCHAR, (growth * 8 / 1024)) + ' MB'
+					WHEN f.is_percent_growth = 1 THEN CONVERT(varchar(30),f.growth) + '%'
+					ELSE CONVERT(varchar(30), (f.growth * 8 / 1024)) + ' MB'
 				END + ', ' +
 				CASE 
 					WHEN f.max_size = 0 THEN 'No'
 					WHEN f.max_size = -1 THEN 'Unlimited'
-					ELSE 'Limited to ' + CONVERT(VARCHAR, (CONVERT(BIGINT,max_size) * 8) / 1024) + ' MB'
+					ELSE 'Limited to ' + CONVERT(varchar(30), (CONVERT(bigint,f.max_size) * 8) / 1024) + ' MB'
 				END 
 			END AS [AutoGrowth/Maxsize]
 		, CASE WHEN f.type_desc = 'LOG' THEN d.log_reuse_wait_desc ELSE 'n/a' END AS log_reuse_wait_desc
 		, REPLACE (f.physical_name, [tempdb].[dbo].[getFileNameFromPath](f.physical_name), '') AS [Path]
 		, [tempdb].[dbo].[getFileNameFromPath](f.physical_name) AS [FileName]
-		, CONVERT(DECIMAL(10,2), vs.SizeMB / 1024.) AS DriveSizeGB
-		, CONVERT(DECIMAL(10,2), vs.FreeMB / 1024.) AS DriveFreeGB
-		, vs.FreeMB * 100 / SizeMB AS DriveFreePercent
+		, CONVERT(decimal(10,2), vs.SizeMB / 1024.) AS DriveSizeGB
+		, CONVERT(decimal(10,2), vs.FreeMB / 1024.) AS DriveFreeGB
+		, vs.FreeMB * 100 / vs.SizeMB AS DriveFreePercent
 		, ISNULL((
 		
-		'USE ' + QUOTENAME(DB_NAME(f.database_id)) +CHAR(10) + 'CHECKPOINT' + CHAR(10) + ' DBCC SHRINKFILE (''' + f.[logical_name] COLLATE DATABASE_DEFAULT + ''', ' + 
-			CONVERT(VARCHAR, CEILING(
+		'USE ' + QUOTENAME(DB_NAME(f.database_id)) +CHAR(10) + 'CHECKPOINT' + CHAR(10) + ' DBCC SHRINKFILE (''' + f.logical_name COLLATE DATABASE_DEFAULT + ''', ' + 
+			CONVERT(varchar(30), CEILING(
 				CASE 
-					WHEN (size * 8 / 1024)			< 1024 THEN NULL
+					WHEN (f.size * 8 / 1024)			< 1024 THEN NULL
 					--WHEN (f.spaceUsed * 8 / 1024) < 16 THEN 16
 					--WHEN (f.spaceUsed * 8 / 1024) < 32 THEN 32
 					--WHEN (f.spaceUsed * 8 / 1024) < 64 THEN 64
@@ -272,8 +273,8 @@ SELECT	f.database_id
 				)) 
 		+')' + CHAR(10) + 'GO'), '--') AS [ShrinkFile]
 
-		, CASE WHEN is_percent_growth = 1 OR 
-					growth * 8 / 1024 < (CASE WHEN (f.size * 8. / 1024) > 10000 THEN 4000 
+		, CASE WHEN f.is_percent_growth = 1 OR 
+					f.growth * 8 / 1024 < (CASE WHEN (f.size * 8. / 1024) > 10000 THEN 4000 
 											WHEN (f.size * 8. / 1024) > 4000 THEN 1000
 											WHEN (f.size * 8. / 1024) > 1000 THEN 500
 											ELSE 100
@@ -283,7 +284,7 @@ SELECT	f.database_id
 			'USE [master]' + CHAR(10) 
 				+ 'GO' + CHAR(10) 
 				+ 'ALTER DATABASE' + QUOTENAME(DB_NAME(f.database_id)) 
-				+ ' MODIFY FILE(NAME=' + QUOTENAME(f.[logical_name]) + ', FILEGROWTH=' + CASE WHEN (f.size * 8. / 1024) > 10000 THEN '4000'  
+				+ ' MODIFY FILE(NAME=' + QUOTENAME(f.logical_name) + ', FILEGROWTH=' + CASE WHEN (f.size * 8. / 1024) > 10000 THEN '4000'  
 																							WHEN (f.size * 8. / 1024) > 4000 THEN '1000'
 																							WHEN (f.size * 8. / 1024) > 1000 THEN '500'
 																							ELSE '100'
@@ -297,12 +298,12 @@ SELECT	f.database_id
 		LEFT JOIN #volume_stats AS vs
 			ON tempdb.dbo.getDriveFromFullPath(vs.Drive) = tempdb.dbo.getDriveFromFullPath(f.physical_name)
 	WHERE f.type_desc = ISNULL(@fileType, f.type_desc)
-		AND source_database_id IS NULL
+		AND d.source_database_id IS NULL
 		AND d.name LIKE ISNULL(@dbname, d.name)
 		AND f.physical_name LIKE ISNULL( @path, f.physical_name)
 	ORDER BY database_name
 			, f.type_desc DESC 
-			, file_id
+			, f.file_id
 
 OnError:
 GO

@@ -58,6 +58,9 @@ GO
 --									- Split Last User Access into Last Write / Last Read
 --									- Split Total User Access into User Writes / User Reads
 --				21/10/2021	RAG	- Add FK DELETE and UPDATE actions
+--				08/02/2022	RAG	- Add ColIndexes to display indexes that include this column 
+--				10/06/2022	RAG	- Added scale for data type datetime2(n) 
+--								- Added empty TRY-CATCH blocks to avoid errors on AG non readable secondaries
 ----------------------------------------------------------------------------------------
 --				 
 -- ============================================= 
@@ -118,6 +121,7 @@ CREATE TABLE #resultTables
 	, IsIdentity			VARCHAR(3)		NULL 
 	, Mandatory				VARCHAR(3)		NULL 
 	, DefaultValue			NVARCHAR(MAX)	NULL 
+	, CheckValue			NVARCHAR(MAX)	NULL
 	, PrimaryKey			VARCHAR(30)		NULL 
 	, ForeignKey			VARCHAR(3)		NULL 
 	, IsComputed			VARCHAR(3)		NULL 
@@ -126,7 +130,8 @@ CREATE TABLE #resultTables
 	, Filestream			VARCHAR(3)		NULL 
 	, ReferencedColumn		NVARCHAR(256)	NULL 
 	, TableDescription		SQL_VARIANT		NULL 
-	, ColDescription		SQL_VARIANT		NULL) 
+	, ColDescription		SQL_VARIANT		NULL
+	, ColIndexes			nvarchar(MAX)	NULL) 
 	
 SELECT *  
 	INTO #resultColumns 
@@ -349,12 +354,16 @@ WHILE @countDBs <= @numDBs BEGIN
 	') 
 	-- SELECT @sqlstring
 	-- Insert all tables with their descriptions 
+	BEGIN TRY
 	EXECUTE sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME'
 				, @schemaName = @schemaName  
 				, @tableName = @tableName 
-	
+	END TRY
+	BEGIN CATCH
+	END CATCH
+
 	IF @onlyTablesList = 0 BEGIN  
 
 		SET @sqlstring = CASE WHEN @EngineEdition <> 8 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
@@ -371,6 +380,7 @@ WHILE @countDBs <= @numDBs BEGIN
 					, IsIdentity 
 					, Mandatory 
 					, DefaultValue 
+					, CheckValue 
 					, PrimaryKey 
 					, ForeignKey 
 					, IsComputed 
@@ -379,7 +389,8 @@ WHILE @countDBs <= @numDBs BEGIN
 					, Filestream 
 					, ReferencedColumn 
 					, TableDescription 
-					, ColDescription) 
+					, ColDescription 
+					, ColIndexes) 
 			SELECT DB_NAME() 
 					, OBJECT_SCHEMA_NAME(i.object_id) 
 					, OBJECT_NAME(i.object_id) 
@@ -390,6 +401,7 @@ WHILE @countDBs <= @numDBs BEGIN
 							WHEN ty.user_type_id IN (165,167,231) AND c.max_length = -1 THEN ''Unlimited'' 
 							WHEN ty.user_type_id IN (231,239) THEN CONVERT(VARCHAR,c.max_length/2) 
 							WHEN ty.user_type_id IN (165,167,173,175,231,239) THEN CONVERT(VARCHAR,c.max_length) 
+							WHEN ty.user_type_id IN (42) THEN CONVERT(VARCHAR,c.scale) 
 							ELSE '''' 
 						END 
 					, CASE WHEN c.is_identity = 1 THEN ''Yes''  
@@ -403,6 +415,7 @@ WHILE @countDBs <= @numDBs BEGIN
 							WHEN df.definition IS NOT NULL THEN SUBSTRING(df.definition, 2, LEN(df.definition)-2) -- to remove extra parenthesis 
 							ELSE '''' 
 						END 
+					, ISNULL(chk.definition, '''') 
 					, (SELECT ''Yes (''  + CASE WHEN ix.type > 1 THEN ''Non-'' ELSE '''' END + ''Clustered)''
 											FROM sys.index_columns AS ixc  
 												LEFT JOIN sys.indexes AS ix 
@@ -430,6 +443,15 @@ WHILE @countDBs <= @numDBs BEGIN
 						+ '', ON UPDATE: '' + fk.update_referential_action_desc COLLATE DATABASE_DEFAULT + '')'', '''') 
 					, NULL 
 					, xp.value 
+					, STUFF((SELECT DISTINCT '', '' + ix.name 
+						FROM sys.index_columns AS ixc
+							INNER JOIN sys.indexes AS ix
+								ON ix.object_id = ixc.object_id
+									AND ix.index_id = ixc.index_id
+						WHERE ixc.object_id = i.object_id
+							AND ixc.object_id = i.object_id
+							AND ixc.column_id = c.column_id
+						FOR XML PATH('''')), 1,2,'''') AS column_indexes
 				FROM sys.indexes AS i 
 					INNER JOIN sys.columns AS c 
 						ON c.object_id = i.object_id 
@@ -439,6 +461,9 @@ WHILE @countDBs <= @numDBs BEGIN
 					LEFT JOIN sys.default_constraints AS df 
 						ON df.parent_object_id = c.object_id 
 							AND df.parent_column_id = c.column_id 
+					LEFT JOIN sys.check_constraints AS chk 
+						ON chk.parent_object_id = c.object_id 
+							AND chk.parent_column_id = c.column_id 
 					LEFT JOIN sys.computed_columns AS cc 
 						ON cc.object_id = i.object_id 
 							AND cc.column_id = c.column_id 
@@ -461,12 +486,17 @@ WHILE @countDBs <= @numDBs BEGIN
 		')
 		PRINT @sqlstring 
 		-- Insert all Columns for all tables			 
+		BEGIN TRY
 		EXECUTE sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME, @columnName SYSNAME'
 				, @schemaName = @schemaName  
 				, @tableName = @tableName 
 				, @columnName = @columnName 
+		END TRY
+		BEGIN CATCH
+		END CATCH
+		
 		END -- IF @onlyTablesList = 0  
 
 	SET @countDBs += 1	 
@@ -547,6 +577,7 @@ ELSE BEGIN
 					, [Filestream]			 
 					, TableDescription 
 					, ColDescription 
+					, ColIndexes 
 				FROM #resultTables 
 			UNION ALL 
 			SELECT databaseName 
@@ -582,6 +613,7 @@ ELSE BEGIN
 					, [Filestream] 
 					, TableDescription 
 					, ColDescription 
+					, ColIndexes 
 				FROM #resultColumns 
 		) 
 		SELECT ISNULL(databaseName,'') AS databaseName 
@@ -616,6 +648,7 @@ ELSE BEGIN
 				, ISNULL(Filestream,'') AS Filestream			 
 				, ISNULL(TableDescription,'') AS TableDescription 
 				, ISNULL(ColDescription,'') AS ColDescription 
+				, ISNULL(ColIndexes,'') AS ColIndexes
 			FROM cte 
 			ORDER BY databaseName 
 				, schemaName 
