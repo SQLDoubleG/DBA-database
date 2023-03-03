@@ -64,6 +64,12 @@ GO
 --									- Added total_cpu_hhmmss and total_duration_hhmmss in human readable time format
 --				06/08/2022	RAG	- Changes
 --									- Added dynamic parts to the query that get waits to filter by plan_id, query_id and object_name
+--				02/03/2023	RAG	- Changes
+--									- Added columns 
+--										- [total_exec_successful]
+--										- [total_exec_aborted]
+--										- [total_exec_exceptions]
+--										- [total_executions_breakdown]
 --
 -- SELECT * FROM sys.databases WHERE is_query_store_on = 1 ORDER BY name
 -- =============================================
@@ -135,6 +141,9 @@ CREATE TABLE #output(
 	, [plan_id]								bigint	NULL
 	, [object_name]							sysname NULL
 	, [total_executions]					bigint NULL
+	, [total_exec_successful]				bigint NULL
+	, [total_exec_aborted]					bigint NULL
+	, [total_exec_exceptions]				bigint NULL
 	, [total_duration_ms]					bigint NULL
 	, [total_cpu_ms]						bigint NULL
 	, [total_reads]							bigint NULL
@@ -181,12 +190,12 @@ IF @EngineEdition = 5 BEGIN
 	SET @dbname	= DB_NAME();
 END;
 
-INSERT INTO @databases  
-	SELECT TOP(100) PERCENT name  
-		FROM sys.databases  
+INSERT INTO @databases
+	SELECT TOP (100) PERCENT name
+		FROM sys.databases
 		WHERE is_query_store_on = 1
-			AND name LIKE ISNULL(@dbname, name) 
-		ORDER BY name ASC;		 
+			AND name LIKE ISNULL(@dbname, name)
+		ORDER BY name ASC;	 
 SET @numDBs = @@ROWCOUNT; 
 
 IF @OrderBy NOT IN ('total_executions', 'avg_duration', 'avg_cpu', 'avg_reads', 'avg_physical_reads', 'avg_writes', 'avg_memory'
@@ -362,9 +371,10 @@ SET @countDBs = 1; -- Reset for next loops
 -- Get the final output for the period defined.
 SET @sql = 'USE [?]
 
-IF OBJECT_ID(''tempdb..#db_intervals'')	IS NOT NULL DROP TABLE #db_intervals;
-IF OBJECT_ID(''tempdb..#db_waits'')		IS NOT NULL DROP TABLE #db_waits;
-IF OBJECT_ID(''tempdb..#db_totals'')	IS NOT NULL DROP TABLE #db_totals;
+DROP TABLE IF EXISTS #db_intervals;
+DROP TABLE IF EXISTS #db_waits;
+DROP TABLE IF EXISTS #db_totals;
+DROP TABLE IF EXISTS #db_total_exec;
 
 CREATE TABLE #db_intervals(
 	[database_id]					int NULL
@@ -412,15 +422,42 @@ IF @object_id IS NULL AND @object_name IS NOT NULL BEGIN
 	RETURN;
 END;
 
+SELECT pvt.plan_id,
+		pvt.runtime_stats_interval_id,
+		ISNULL(pvt.Regular, 0) AS Regular,
+		ISNULL(pvt.Aborted, 0) AS Aborted,
+		ISNULL(pvt.Exception, 0) AS Exception
+INTO #db_total_exec
+FROM (
+	SELECT rst.plan_id,
+			rst.execution_type_desc,
+			rst.count_executions,
+			rst.runtime_stats_interval_id
+	FROM sys.query_store_runtime_stats AS rst
+		INNER JOIN #db_intervals AS rsti
+			ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id
+				AND rsti.database_id = DB_ID()
+		[EXTRA_JOIN]
+	WHERE 1=1 
+		[WHERECLAUSE]	
+) AS t
+PIVOT (
+	SUM(count_executions)
+	FOR execution_type_desc IN ([Regular], [Aborted], [Exception])
+) AS pvt;
+
 SELECT TOP (@topNrows) 
 		CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
 		, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
 		, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id
 		, rst.plan_id
-		--, q.query_id
-		--, q.query_text_id
-		--, q.object_id
-		, SUM(rst.count_executions) AS total_executions
+		
+		--, SUM(rst.count_executions) AS total_executions
+		, SUM(t.Regular) + SUM(t.Aborted) + SUM(t.Exception) AS total_executions
+		, SUM(t.Regular) AS total_exec_successful
+		, SUM(t.Aborted) AS total_exec_aborted
+		, SUM(t.Exception) AS total_exec_exceptions
+
 		-- averages
 		, AVG(rst.avg_duration) AS avg_duration		   
 		, AVG(rst.avg_cpu_time) AS avg_cpu_time		   
@@ -443,14 +480,15 @@ INTO #t
 		INNER JOIN #db_intervals AS rsti
 			ON rsti.runtime_stats_interval_id = rst.runtime_stats_interval_id 
 				AND rsti.database_id = DB_ID()
+		INNER JOIN #db_total_exec AS t
+			ON t.plan_id = rst.plan_id
+				AND t.runtime_stats_interval_id = rst.runtime_stats_interval_id 
+
 		[EXTRA_JOIN]
 	WHERE 1=1 
 		[WHERECLAUSE]	
 		
 	GROUP BY rst.plan_id
-			--, q.query_id
-			--, q.query_text_id
-			--, q.object_id
 			, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END			
 	ORDER BY [ORDERCLAUSE]
 
@@ -461,6 +499,9 @@ SELECT DB_NAME() AS database_name
 		, rst.plan_id
 		, ISNULL(OBJECT_SCHEMA_NAME(q.object_id) + ''.'' + OBJECT_NAME(q.object_id), ''-'') AS object_name
 		, rst.total_executions
+		, rst.total_exec_successful
+		, rst.total_exec_aborted
+		, rst.total_exec_exceptions
 	
 	-- totals
 		, CONVERT(BIGINT, rst.total_duration / 1000)	AS total_duration_ms
@@ -595,9 +636,10 @@ WHILE @countDBs <= @numDBs BEGIN
 
 	SET @sqlstringdb = REPLACE(@sqlstringdb, '[ORDERCLAUSE2]', @orderclause);	
 	
-	-- SELECT @sqlstringdb;
+	--SELECT @sqlstringdb;
 	INSERT INTO #output ([database_name], [start_time], [end_time], [query_id], [plan_id], [object_name]
-						, [total_executions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads], [total_writes], [total_memory], [total_rowcount], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
+						, [total_executions], [total_exec_successful], [total_exec_aborted], [total_exec_exceptions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads]
+						, [total_writes], [total_memory], [total_rowcount], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
 						, [avg_duration_ms], [avg_cpu_time_ms], [avg_logical_io_reads], [avg_physical_io_reads], [avg_logical_io_writes], [avg_query_max_used_memory], [avg_rowcount], [avg_query_wait_time_ms]
 						, [percentge_duration], [percentge_cpu], [percentge_reads], [percentge_physical_reads], [percentge_writes], [percentge_memory], [percentage_query_wait_time_ms]
 						, [query_sql_text], [query_plan])
@@ -620,7 +662,12 @@ SELECT [database_name]
 		, [plan_id]
 		, [object_name]
 		, [total_executions]
-
+		, [total_exec_successful]
+		, [total_exec_aborted]
+		, [total_exec_exceptions]
+		, '(Successful:' + CONVERT(varchar(100), [total_exec_successful]) + 
+			', Aborted:' + CONVERT(varchar(100), [total_exec_aborted]) + 
+			', Exceptions:' + CONVERT(varchar(100), [total_exec_exceptions]) + ')' AS [total_executions_breakdown]
 		, [total_duration_ms]
 		, ISNULL(NULLIF (CONVERT(VARCHAR(24), ([total_duration_ms]/1000) / 3600 / 24 ),'0') + '.', '') + 
 			RIGHT('00' + CONVERT(VARCHAR(24), ([total_duration_ms]/1000) / 3600 % 24 ), 2) + ':' + 
@@ -667,7 +714,7 @@ SELECT [database_name]
 		, [percentge_memory]
 		, [percentage_query_wait_time_ms]
 		, ISNULL(TRY_CONVERT(xml, '<!--' + REPLACE(query_sql_text, '--', '/* this line was commented out */') + '-->'), query_sql_text) AS query_sql_text
-		-- , '"' + REPLACE(query_sql_text, '"', '&quote;') + '"' AS query_sql_text -- use this to copy paste into a spreadsheet
+		--, '"' + LEFT(REPLACE(query_sql_text, '"', '&quote;'), 49990) + '"' AS query_sql_text -- use this to copy paste into a spreadsheet
 		, ISNULL(TRY_CONVERT(xml, query_plan), query_plan) AS query_plan
 FROM #output
 ORDER BY [Id];
