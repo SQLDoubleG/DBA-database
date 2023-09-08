@@ -47,6 +47,7 @@ GO
 --								- Added is_preffered replica using [fn_hadr_backup_is_preferred_replica]
 --				11/03/2020 RAG	- Added MOVE xx TO xx and parameters @newDataPath and @newLogPath for easy restores
 --				11/06/2020 RAG	- Added RESTORE FILESLISTONLY column and REPLACE option
+--				08/09/2023 RAG	- Added @recovery param
 -- =============================================
 -- =============================================
 -- Dependencies:This Section will create on tempdb any dependant function
@@ -92,9 +93,10 @@ DECLARE @dbname			sysname --= 'msdb'
 		, @backupType	CHAR(1) = 'X'
 		, @numBkp		INT = 1
 		, @orderBy		VARCHAR(10) = 'ASC'
-		, @newDataPath	NVARCHAR(512) = NULL -- 'X:\Data'
-		, @newLogPath	NVARCHAR(512) = NULL -- 'X:\Logs'
-		, @replace		BIT = 0 -- Set to 1 to add WITH REPLACE
+		, @newDataPath	NVARCHAR(512) --= ''
+		, @newLogPath	NVARCHAR(512) --= ''
+		, @replace		BIT = 1 -- Set to 1 to add WITH REPLACE
+		, @recovery		BIT = 0 -- 0 > NORECOVERY, 1 > RECOVERY
 	
 DECLARE @sqlstring NVARCHAR(4000)
 
@@ -158,14 +160,18 @@ END
 			, b.backup_start_date
 			, b.backup_finish_date
 			, b.media_set_id
-			--, mf.physical_device_name
 			, ROW_NUMBER() OVER (PARTITION BY b.database_name ORDER BY b.backup_set_id DESC) AS RowNum			
 		FROM msdb.dbo.backupset AS b
-			--INNER JOIN msdb.dbo.backupmediafamily as mf
-			--	ON mf.media_set_id = b.media_set_id
 		WHERE b.database_name LIKE ISNULL(@dbname, b.database_name)
 			AND b.server_name = @@SERVERNAME
 			AND (b.type = ISNULL(@backupType, b.type) OR (@backupType = 'X' AND b.type <> 'L'))
+			/* uncomment for logs since last full 
+			AND b.backup_finish_date >= (SELECT MAX(bb.backup_finish_date) 
+										FROM msdb.dbo.backupset AS bb
+										WHERE bb.database_name = b.database_name
+										AND bb.type = 'D')
+			--*/
+
 )
 
 SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
@@ -194,19 +200,24 @@ SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
 			AS RESTORE_FILELISTONLY
 		, ISNULL('RESTORE ' + CASE WHEN cte.type = 'L' THEN 'LOG ' ELSE 'DATABASE ' END + QUOTENAME(cte.database_name) + CHAR(10) + CHAR(9) + 'FROM ' + 
 			STUFF( (SELECT ', DISK = ''' + mf.physical_device_name + '''' + CHAR(10) + CHAR(9)
-						FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) + 'WITH NORECOVERY, STATS' 
+						FROM msdb.dbo.backupmediafamily AS mf WHERE mf.media_set_id = cte.media_set_id FOR XML PATH('')), 1,2,'' ) 
+						+ 'WITH ' + CASE WHEN @recovery = 0 THEN 'NO' ELSE '' END + 'RECOVERY, STATS' 
 			+ CASE WHEN @replace = 1 AND cte.type = 'D'  THEN ', REPLACE' ELSE '' END
 			+ CASE WHEN cte.type = 'D' THEN 
-					(SELECT ', MOVE ''' + mf.name  + ''' TO ''' + (
-						CASE WHEN mf.type_desc = 'ROWS' AND @newDataPath IS NOT NULL 
-								THEN @newDataPath + tempdb.dbo.getFileNameFromPath(mf.physical_name)
-							 WHEN mf.type_desc = 'LOG' AND @newLogPath IS NOT NULL 
-								THEN @newLogPath + tempdb.dbo.getFileNameFromPath(mf.physical_name)
-							ELSE mf.physical_name
-						END + '''' + CHAR(10) + CHAR(9))
-					FROM sys.master_files AS mf WHERE DB_NAME(mf.database_id) = cte.database_name FOR XML PATH(''))
+					STUFF(
+						(SELECT + CHAR(10) + CHAR(9) + ', MOVE ''' + mf.name  + ''' TO ''' + (
+							CASE WHEN mf.type_desc = 'ROWS' AND @newDataPath IS NOT NULL 
+									THEN @newDataPath + tempdb.dbo.getFileNameFromPath(mf.physical_name)
+								WHEN mf.type_desc = 'LOG' AND @newLogPath IS NOT NULL 
+									THEN @newLogPath + tempdb.dbo.getFileNameFromPath(mf.physical_name)
+								ELSE mf.physical_name
+							END + '''' )
+						FROM sys.master_files AS mf 
+						WHERE mf.database_id = DB_ID(cte.database_name) FOR XML PATH('')), 1, 2, '')
 					ELSE ''
-				END, '--')
+				END
+			+ ';' + CHAR(10) + 'GO', '--')
+
 		AS RESTORE_BACKUP
 	FROM sys.databases AS d
 		LEFT JOIN cte
@@ -216,6 +227,7 @@ SELECT 	ISNULL(cte.server_name, @@SERVERNAME) AS server_name
 			ON pr.database_id = d.database_id
 	WHERE d.database_id <> 2
 		AND d.name LIKE ISNULL(@dbname, d.name)
+		AND d.database_id > 4
 	ORDER BY database_name ASC
 		-- RowNum is descending, so we need to invert the order, this is not a mistake!
 		, CASE WHEN @orderBy = 'ASC' THEN cte.RowNum ELSE NULL END DESC
