@@ -36,6 +36,7 @@ GO
 --				14/01/2021 RAG - Added parameter @EngineEdition
 --				11/02/2021 RAG - Added parameter @includeSystem to include system databases
 --				01/09/2022 RAG - Added [FreePercent]
+--				08/09/2023 RAG - Added TRY-CATCH block to prevent errors accessing secondary (non-readable) databases in AG's
 --
 -- =============================================
 DECLARE @dbname				SYSNAME 
@@ -66,6 +67,7 @@ INSERT INTO @dbs (dbname)
 		FROM sys.databases 
 		WHERE name LIKE ISNULL(@dbname, name)
 			AND (@includeSystem = 1 OR database_id > 4)
+			AND state = 0
 		ORDER BY name
 
 
@@ -100,8 +102,12 @@ WHILE @countDBs <= @numDBs BEGIN
 	END
 
 	PRINT @sqlstring
-	INSERT INTO @dbfiles ([db_name], type_desc, sizeMB)
-		EXEC sp_executesql @sqlstring
+	BEGIN TRY
+		INSERT INTO @dbfiles ([db_name], type_desc, sizeMB)
+			EXEC sp_executesql @sqlstring;
+	END TRY 
+	BEGIN CATCH
+	END CATCH
 
 	SET @countDBs = @countDBs + 1
 END
