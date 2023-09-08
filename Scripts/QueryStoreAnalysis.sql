@@ -70,6 +70,7 @@ GO
 --										- [total_exec_aborted]
 --										- [total_exec_exceptions]
 --										- [total_executions_breakdown]
+--				19/07/2023	RAG	- Added [query_hash] column and @query_hash parameter
 --
 -- SELECT * FROM sys.databases WHERE is_query_store_on = 1 ORDER BY name
 -- =============================================
@@ -81,12 +82,13 @@ DECLARE @topNrows	int				= 10;
 DECLARE @object_name nvarchar(261)	= NULL;
 DECLARE @query_id	int				= NULL;
 DECLARE @plan_id	int				= NULL;
+DECLARE @query_hash	binary(8)		= NULL;
 DECLARE @OrderBy	sysname			= 'total_cpu';
 
--- ============================================= 
+--============================================= 
 -- Do not modify below this line
---	unless you know what you are doing!!
--- ============================================= 
+-- unless you know what you are doing!!
+--============================================= 
 
 SET NOCOUNT ON;
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
@@ -139,6 +141,7 @@ CREATE TABLE #output(
 	, [end_time]							datetimeoffset NULL
 	, [query_id]							bigint	NULL
 	, [plan_id]								bigint	NULL
+	, [query_hash]							binary(8) NULL
 	, [object_name]							sysname NULL
 	, [total_executions]					bigint NULL
 	, [total_exec_successful]				bigint NULL
@@ -177,7 +180,7 @@ SET @topNrows	= ISNULL(@topNrows, 10);
 SET @OrderBy	= ISNULL(@OrderBy, 'total_cpu');
 
 -- Get everything if we want just an object
-SET @topNrows	= CASE WHEN COALESCE(@object_name, CONVERT(varchar(30), @query_id), CONVERT(varchar(30), @plan_id)) 
+SET @topNrows	= CASE WHEN COALESCE(@object_name, CONVERT(varchar(30), @query_id), CONVERT(varchar(30), @plan_id), CONVERT(varchar(30), @query_hash)) 
 						IS NOT NULL THEN 2140000000 
 						ELSE @topNrows 
 					END;
@@ -293,12 +296,12 @@ IF @numericVersion > 13 BEGIN
 	
 		SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 	
-		IF @object_name IS NOT NULL OR @query_id IS NOT NULL
+		IF @object_name IS NOT NULL OR @query_id IS NOT NULL OR @query_hash IS NOT NULL
 		BEGIN
 			SET @extrajoin = CHAR(10) +'INNER JOIN sys.query_store_plan AS qp' + 
 								CHAR(10) +'	ON qp.plan_id = w.plan_id'  
 		END
-		IF @object_name IS NOT NULL 
+		IF @object_name IS NOT NULL OR @query_hash IS NOT NULL
 		BEGIN
 			SET @extrajoin += CHAR(10) +'INNER JOIN sys.query_store_query AS q' + 
 								CHAR(10) +'	ON q.query_id = qp.query_id';
@@ -318,15 +321,22 @@ IF @numericVersion > 13 BEGIN
 		BEGIN
 			SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
 		END;
+		IF @query_hash IS NOT NULL 
+		BEGIN
+			SET @whereclause += CHAR(10) + 'AND q.query_hash = @query_hash';
+		END;
 
 		SET @sqlstringdb = REPLACE(@sqlstringdb, '[WHERECLAUSE]', @whereclause);
 
+		--SELECT @sqlstringdb
+
 		INSERT INTO #waits (database_id, plan_id, runtime_stats_interval_id, [avg_query_wait_time_ms], total_query_wait_time_ms, total_query_wait_time_ms_breakdown)
 		EXECUTE sys.sp_executesql @sqlstmt = @sqlstringdb
-			, @params		= N'@object_name nvarchar(261), @plan_id int, @query_id int'
+			, @params		= N'@object_name nvarchar(261), @plan_id int, @query_id int, @query_hash binary(8)'
 			, @object_name	= @object_name
 			, @plan_id		= @plan_id
-			, @query_id		= @query_id;
+			, @query_id		= @query_id
+			, @query_hash	= @query_hash;
 		SET @countDBs = @countDBs + 1;
 	END;
 END;
@@ -449,7 +459,7 @@ PIVOT (
 SELECT TOP (@topNrows) 
 		CONVERT(DATETIME2(0), MIN(rsti.start_time)) AS start_time
 		, CONVERT(DATETIME2(0), MAX(rsti.end_time)) AS end_time
-		, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id
+		, CASE WHEN COALESCE(@object_id,@query_id,@plan_id,@query_hash) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END AS runtime_stats_interval_id
 		, rst.plan_id
 		
 		--, SUM(rst.count_executions) AS total_executions
@@ -489,7 +499,7 @@ INTO #t
 		[WHERECLAUSE]	
 		
 	GROUP BY rst.plan_id
-			, CASE WHEN COALESCE(@object_id,@query_id,@plan_id) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END			
+			, CASE WHEN COALESCE(@object_id,@query_id,@plan_id,@query_hash) IS NULL THEN NULL ELSE rsti.runtime_stats_interval_id END			
 	ORDER BY [ORDERCLAUSE]
 
 SELECT DB_NAME() AS database_name
@@ -497,6 +507,7 @@ SELECT DB_NAME() AS database_name
 		, rst.end_time
 		, qp.query_id
 		, rst.plan_id
+		, q.query_hash
 		, ISNULL(OBJECT_SCHEMA_NAME(q.object_id) + ''.'' + OBJECT_NAME(q.object_id), ''-'') AS object_name
 		, rst.total_executions
 		, rst.total_exec_successful
@@ -563,12 +574,12 @@ WHILE @countDBs <= @numDBs BEGIN
 	
 	SET @sqlstringdb = REPLACE(@sql, '?', @dbname);
 	
-	IF @object_name IS NOT NULL OR @query_id IS NOT NULL OR @plan_id IS NOT NULL
+	IF @object_name IS NOT NULL OR @query_id IS NOT NULL OR @plan_id IS NOT NULL OR @query_hash IS NOT NULL
 	BEGIN
 		SET @extrajoin = CHAR(10) +'INNER JOIN sys.query_store_plan AS qp' + 
 							CHAR(10) +'	ON qp.plan_id = rst.plan_id'  
 	END
-	IF @object_name IS NOT NULL 
+	IF @object_name IS NOT NULL OR @query_hash IS NOT NULL
 	BEGIN
 		SET @extrajoin += CHAR(10) +'INNER JOIN sys.query_store_query AS q' + 
 							CHAR(10) +'	ON q.query_id = qp.query_id';
@@ -587,6 +598,10 @@ WHILE @countDBs <= @numDBs BEGIN
 	IF @object_name IS NOT NULL 
 	BEGIN
 		SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
+	END;
+	IF @query_hash IS NOT NULL 
+	BEGIN
+		SET @whereclause += CHAR(10) + 'AND q.query_hash = @query_hash';
 	END;
 
 	SET @sqlstringdb = REPLACE(@sqlstringdb, '[WHERECLAUSE]', @whereclause);
@@ -637,7 +652,8 @@ WHILE @countDBs <= @numDBs BEGIN
 	SET @sqlstringdb = REPLACE(@sqlstringdb, '[ORDERCLAUSE2]', @orderclause);	
 	
 	--SELECT @sqlstringdb;
-	INSERT INTO #output ([database_name], [start_time], [end_time], [query_id], [plan_id], [object_name]
+
+	INSERT INTO #output ([database_name], [start_time], [end_time], [query_id], [plan_id], [query_hash], [object_name]
 						, [total_executions], [total_exec_successful], [total_exec_aborted], [total_exec_exceptions], [total_duration_ms], [total_cpu_ms], [total_reads], [total_physical_reads]
 						, [total_writes], [total_memory], [total_rowcount], [total_query_wait_time_ms], [total_query_wait_time_ms_breakdown]
 						, [avg_duration_ms], [avg_cpu_time_ms], [avg_logical_io_reads], [avg_physical_io_reads], [avg_logical_io_writes], [avg_query_max_used_memory], [avg_rowcount], [avg_query_wait_time_ms]
@@ -645,12 +661,13 @@ WHILE @countDBs <= @numDBs BEGIN
 						, [query_sql_text], [query_plan])
 	EXECUTE sys.sp_executesql 
 		@sqlstmt		= @sqlstringdb
-		, @params		= N'@topNrows INT, @OrderBy SYSNAME, @object_name nvarchar(261), @query_id INT, @plan_id INT'
+		, @params		= N'@topNrows int, @OrderBy sysname, @object_name nvarchar(261), @query_id int, @plan_id int, @query_hash binary(8)'
 		, @topNrows		= @topNrows 
 		, @OrderBy		= @OrderBy
 		, @object_name	= @object_name
 		, @query_id		= @query_id
-		, @plan_id		= @plan_id;
+		, @plan_id		= @plan_id
+		, @query_hash	= @query_hash;
 		
 	SET @countDBs = @countDBs + 1;
 END;
@@ -660,6 +677,7 @@ SELECT [database_name]
 		, CONVERT(smalldatetime, [end_time]	 ) AS [end_time]	
 		, [query_id]
 		, [plan_id]
+		, [query_hash]
 		, [object_name]
 		, [total_executions]
 		, [total_exec_successful]
