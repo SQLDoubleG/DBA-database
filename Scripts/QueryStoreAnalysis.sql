@@ -463,10 +463,10 @@ SELECT TOP (@topNrows)
 		, rst.plan_id
 		
 		--, SUM(rst.count_executions) AS total_executions
-		, SUM(t.Regular) + SUM(t.Aborted) + SUM(t.Exception) AS total_executions
-		, SUM(t.Regular) AS total_exec_successful
-		, SUM(t.Aborted) AS total_exec_aborted
-		, SUM(t.Exception) AS total_exec_exceptions
+		, MAX(t.Regular) + MAX(t.Aborted) + MAX(t.Exception) AS total_executions
+		, MAX(t.Regular) AS total_exec_successful
+		, MAX(t.Aborted) AS total_exec_aborted
+		, MAX(t.Exception) AS total_exec_exceptions
 
 		-- averages
 		, AVG(rst.avg_duration) AS avg_duration		   
