@@ -34,8 +34,11 @@ GO
 --				2018-04-30 RAG	- Added check for existance to the CREATE_LOGIN statement
 --								- Don't script [sa] login
 --				2019-07-02 RAG	- Added style 1 to convert hashes to NVARCHAR()
+--				2025-06-26 RAG	- Added fix for rds passwords (return 0x0)
+--								- Reorder create script to be: user, roles, permissions.
+--								- Fix permissions WITH GRANT OPTION to be displayed correctly
 -- =============================================
-DECLARE	@loginName		SYSNAME = NULL
+DECLARE	@loginName		SYSNAME = NULL;
 
 -- ============================================= 
 -- Do not modify below this line
@@ -142,35 +145,42 @@ SELECT @@SERVERNAME AS ServerName
 					WHERE srm.member_principal_id = sp.principal_id
 					FOR XML PATH('')), 1, 4, '') AS DROP_SERVER_ROLE
 		,	
-		CASE WHEN sp.name = 'sa' THEN ''
+		CASE WHEN sp.sid = 0x01 THEN '' /* sa */
 			ELSE 			
 			'USE [master]' + @GO
 			+ 'IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = ''' + sp.name + ''') BEGIN' + CHAR(10)
 			
 			+ CASE 
 				WHEN sp.type IN ('U', 'G') THEN 'CREATE LOGIN ' + QUOTENAME(sp.name) + ' FROM WINDOWS WITH DEFAULT_DATABASE = ' + QUOTENAME(sp.default_database_name)
-				ELSE 'CREATE LOGIN ' + QUOTENAME(sp.name) + ' WITH PASSWORD = ' + (CONVERT(NVARCHAR(256), LOGINPROPERTY(sp.name, 'PasswordHash' ), 1)) + 
-					' HASHED, SID = ' + (CONVERT(NVARCHAR(256), sp.sid, 1)) + ', DEFAULT_DATABASE = '  + QUOTENAME(sp.default_database_name) +
-				', CHECK_POLICY = ' + CASE WHEN sqll.is_policy_checked = 1 THEN 'ON' ELSE 'OFF' END + 
-				', CHECK_EXPIRATION = ' + CASE WHEN sqll.is_expiration_checked = 1 THEN 'ON' ELSE 'OFF' END + CHAR(10)
-				+ (SELECT p.state_desc + ' ' + p.permission_name + ' TO ' + QUOTENAME(sp.name) + CHAR(10) AS [text()]
-							FROM sys.server_permissions AS p
-							WHERE p.grantee_principal_id = sp.principal_id 
-							FOR XML PATH(''))
-			END + CHAR(10)
+				ELSE CHAR(9) + 'CREATE LOGIN ' + QUOTENAME(sp.name) + ' WITH PASSWORD = ' + ISNULL((CONVERT(NVARCHAR(256), LOGINPROPERTY(sp.name, 'PasswordHash' ), 1)), '0x0') + ' HASHED' + 
+					', SID = ' + (CONVERT(NVARCHAR(256), sp.sid, 1)) + ', DEFAULT_DATABASE = '  + QUOTENAME(sp.default_database_name) +
+					', CHECK_POLICY = ' + CASE WHEN sqll.is_policy_checked = 1 THEN 'ON' ELSE 'OFF' END + 
+					', CHECK_EXPIRATION = ' + CASE WHEN sqll.is_expiration_checked = 1 THEN 'ON' ELSE 'OFF' END + CHAR(10)
 			+ 'END' + CHAR(10)
-			+ CASE WHEN sp.is_disabled = 1 THEN 'ALTER LOGIN ' + QUOTENAME(sp.name) + ' DISABLE' + @GO ELSE '' END +
-				ISNULL(STUFF( (SELECT CHAR(10) + 
+			/* ROLES */
+			+ ISNULL(STUFF( (SELECT CHAR(10) + 
 										CASE WHEN @numericVersion >= 11 THEN 'ALTER SERVER ROLE '  + QUOTENAME(name) + ' ADD MEMBER ' + QUOTENAME(sp.name) 
 											ELSE 'EXECUTE sp_addsrvrolemember ' + QUOTENAME(sp.name) + ', ' + QUOTENAME(name)
-										END			
-									+ CHAR(10) + 'GO'
+										END		
 								FROM sys.server_role_members AS rm
 									INNER JOIN sys.server_principals AS r
 										ON r.principal_id = rm.role_principal_id
 											AND r.type = 'R'
 								WHERE rm.member_principal_id = sp.principal_id
-								FOR XML PATH('')), 1, 1, ''), '') 
+								FOR XML PATH('')), 1, 1, ''), '') + @GO
+			/* SERVER PERMISSIONS */
+			+ ISNULL(STUFF( (SELECT CHAR(10) + 
+									CASE WHEN p.state = 'W' 
+										THEN 'GRANT ' + p.permission_name + ' TO ' + QUOTENAME(sp.name) + ' WITH GRANT OPTION' + CHAR(10) 
+										ELSE p.state_desc + ' ' + p.permission_name + ' TO ' + QUOTENAME(sp.name) + CHAR(10) 
+									END AS [text()]
+								FROM sys.server_permissions AS p
+								WHERE p.grantee_principal_id = sp.principal_id 
+								ORDER BY p.state
+								FOR XML PATH('')), 1, 1, ''), '') + @GO
+			END 
+			+ CASE WHEN sp.is_disabled = 1 THEN 'ALTER LOGIN ' + QUOTENAME(sp.name) + ' DISABLE' + @GO ELSE '' END 
+			
 		END AS CREATE_LOGIN
 
 	FROM sys.server_principals AS sp
