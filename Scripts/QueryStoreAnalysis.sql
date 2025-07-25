@@ -71,13 +71,16 @@ GO
 --										- [total_exec_exceptions]
 --										- [total_executions_breakdown]
 --				19/07/2023	RAG	- Added [query_hash] column and @query_hash parameter
+--				25/07/2025	RAG	- Changes:
+--										- Default date params to use GETUTCDATE()
+--										- bugfix in total executions
 --
 -- SELECT * FROM sys.databases WHERE is_query_store_on = 1 ORDER BY name
 -- =============================================
 
 DECLARE @dbname	    sysname			= NULL;
-DECLARE @dateFrom	datetime2		= DATEADD(DAY, -8, GETDATE());
-DECLARE @dateTo		datetime2		= GETDATE();
+DECLARE @dateFrom	datetime2		= DATEADD(DAY, -8, GETUTCDATE());
+DECLARE @dateTo		datetime2		= GETUTCDATE();
 DECLARE @topNrows	int				= 10;
 DECLARE @object_name nvarchar(261)	= NULL;
 DECLARE @query_id	int				= NULL;
@@ -463,10 +466,10 @@ SELECT TOP (@topNrows)
 		, rst.plan_id
 		
 		--, SUM(rst.count_executions) AS total_executions
-		, MAX(t.Regular) + MAX(t.Aborted) + MAX(t.Exception) AS total_executions
-		, MAX(t.Regular) AS total_exec_successful
-		, MAX(t.Aborted) AS total_exec_aborted
-		, MAX(t.Exception) AS total_exec_exceptions
+		, SUM(t.Regular) + SUM(t.Aborted) + SUM(t.Exception) AS total_executions
+		, SUM(t.Regular) AS total_exec_successful
+		, SUM(t.Aborted) AS total_exec_aborted
+		, SUM(t.Exception) AS total_exec_exceptions
 
 		-- averages
 		, AVG(rst.avg_duration) AS avg_duration		   

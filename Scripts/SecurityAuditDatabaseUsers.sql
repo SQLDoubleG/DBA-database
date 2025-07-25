@@ -1,6 +1,6 @@
-SET QUOTED_IDENTIFIER ON
+SET QUOTED_IDENTIFIER ON;
 GO
-SET ANSI_NULLS ON
+SET ANSI_NULLS ON;
 GO
 --=============================================
 -- Copyright (C) 2018 Raul Gonzalez, @SQLDoubleG
@@ -33,72 +33,81 @@ GO
 --				12/03/2020 RAG - Added column [CREATE_DB_ROLE] 
 --				11/08/2020 RAG - Added parameter @onlyOrphanUsers to identify orphan users
 --				16/01/2021 RAG - Added parameter @EngineEdition
+--				30/04/2025 RAG - Added value X = External group from Microsoft Entra group or applications 
 --									Removed dependencies and solve collation issues to run on Azure SQL DB
 --									Display 'CONTAINED USER' if that is the case
+--				25/07/2025 RAG - Added CREATE_USER column and other fixes
 --
 -- Params are concatenated to the @sqlstring string to avoid problems in databases with different collation than [DBA]
 --
 -- =============================================
 
-DECLARE	@dbname					sysname --= 'msdb'
-		, @db_principal_name	sysname = NULL
-		, @srv_principal_name 	sysname = NULL
-		, @onlyOrphanUsers		BIT		= 0
-		, @includeSystemDBs		BIT		= 1
-		, @EngineEdition		INT		= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
+DECLARE @dbname sysname = NULL; 
+DECLARE @db_principal_name sysname = NULL;
+DECLARE @srv_principal_name sysname = NULL;
+DECLARE @onlyOrphanUsers bit = 0;
+DECLARE @includeSystemDBs bit = 1;
+DECLARE @EngineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
 
 -- ============================================= 
 -- Do not modify below this line
 --	unless you know what you are doing!!
 -- ============================================= 
 
-IF @EngineEdition = 5 BEGIN
--- Azure SQL Database, the script can't run on multiple databases
-	SET @dbname	= DB_NAME()
-END
+IF @EngineEdition = 5
+BEGIN
+	-- Azure SQL Database, the script can't run on multiple databases
+	SET @dbname = DB_NAME();
+END;
 
 SET NOCOUNT ON;
 
-DECLARE @countDBs INT = 1, @numDBs INT, @sqlstring NVARCHAR(MAX);
+DECLARE @countDBs int = 1,
+		@numDBs int,
+		@sqlstring nvarchar(MAX);
 
-IF OBJECT_ID('tempdb..#databases')			IS NOT NULL DROP TABLE #databases;
-IF OBJECT_ID('tempdb..#all_db_users')		IS NOT NULL DROP TABLE #all_db_users;
-IF OBJECT_ID('tempdb..#all_db_permissions') IS NOT NULL DROP TABLE #all_db_permissions;
+IF OBJECT_ID('tempdb..#databases') IS NOT NULL
+	DROP TABLE #databases;
+IF OBJECT_ID('tempdb..#all_db_users') IS NOT NULL
+	DROP TABLE #all_db_users;
+IF OBJECT_ID('tempdb..#all_db_permissions') IS NOT NULL
+	DROP TABLE #all_db_permissions;
 
 CREATE TABLE #all_db_users (
-	database_id				INT
-	, principal_id			INT
-	, principal_sid			VARBINARY(85)
-	, principal_name		sysname
-	, principal_type_desc	NVARCHAR(60)
-	, default_schema_name	sysname		  NULL
-	, has_db_access			BIT
-	, authentication_type	SYSNAME
-	, database_roles		NVARCHAR(512) NULL
-	, included_users		NVARCHAR(4000) NULL
-	, DROP_USER_SCHEMA		NVARCHAR(256)
-	, CREATE_DB_ROLE		NVARCHAR(4000)
-	, DROP_DB_ROLE			NVARCHAR(4000)
-	, DROP_DB_USER			NVARCHAR(256)
+	database_id int,
+	principal_id int,
+	principal_sid varbinary(85),
+	principal_name sysname,
+	principal_type_desc nvarchar(60),
+	default_schema_name sysname NULL,
+	has_db_access bit,
+	authentication_type sysname,
+	database_roles nvarchar(MAX) NULL,
+	included_users nvarchar(MAX) NULL,
+	DROP_USER_SCHEMA nvarchar(MAX),
+	CREATE_DB_ROLE nvarchar(MAX),
+	DROP_DB_ROLE nvarchar(MAX),
+	DROP_DB_USER nvarchar(MAX),
+	CREATE_DB_USER nvarchar(MAX)
 );
 
 CREATE TABLE #all_db_permissions (
-	database_id				INT
-	, principal_sid			VARBINARY(85)
-	, principal_name		sysname
-	, principal_type_desc	sysname
-	, class_desc			sysname		NULL
-	, object_name			sysname		NULL
-	, permission_list		NVARCHAR(512) NULL
-	, permission_state_desc sysname
-	, REVOKE_PERMISSION		NVARCHAR(4000)
+	database_id int,
+	principal_sid varbinary(85),
+	principal_name sysname,
+	principal_type_desc sysname,
+	class_desc sysname NULL,
+	object_name sysname NULL,
+	permission_list nvarchar(512) NULL,
+	permission_state_desc sysname,
+	REVOKE_PERMISSION nvarchar(4000)
 );
 
 IF @dbname IS NOT NULL BEGIN
 	SET @includeSystemDBs = 1;
 END;
 
-SELECT IDENTITY(INT, 1, 1) AS ID, name
+SELECT IDENTITY(int, 1, 1) AS ID, name
 INTO #databases
 	FROM sys.databases
 	WHERE state					 = 0
@@ -112,32 +121,30 @@ WHILE @countDBs <= @numDBs BEGIN
 	SET @dbname = (SELECT name FROM #databases WHERE ID = @countDBs);
 	SET @sqlstring	= CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
 			+ N'
-            DECLARE @db_principal_name SYSNAME = '
+			DECLARE @db_principal_name SYSNAME = '
 				+ ISNULL ((N'''' + @db_principal_name + N''''), N'NULL')
-				+ CONVERT (
-						NVARCHAR(MAX)
-					, N'
-            
+				+ CONVERT (nvarchar(MAX), N'
 			DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY(''ProductVersion'')),4))
 
-            -- All database users and the list of database roles
-            INSERT INTO #all_db_users (
-                    database_id
-                    , principal_id
-                    , principal_sid
-                    , principal_name
+			-- All database users and the list of database roles
+			INSERT INTO #all_db_users (
+					database_id
+					, principal_id
+					, principal_sid
+					, principal_name
 					, principal_type_desc
-                    , default_schema_name
-                    , has_db_access
+					, default_schema_name
+					, has_db_access
 					, authentication_type
-                    , database_roles
+					, database_roles
 					, included_users
-                    , DROP_USER_SCHEMA
-                    , CREATE_DB_ROLE
-                    , DROP_DB_ROLE
-                    , DROP_DB_USER
-            )
-                SELECT DB_ID() AS database_id
+					, DROP_USER_SCHEMA
+					, CREATE_DB_ROLE
+					, DROP_DB_ROLE
+					, DROP_DB_USER
+					, CREATE_DB_USER
+			)
+				SELECT DB_ID() AS database_id
 						, dbp.principal_id AS principal_id
 						, dbp.sid AS principal_sid
 						, dbp.name AS principal_name
@@ -150,8 +157,8 @@ WHILE @countDBs <= @numDBs BEGIN
 						, authentication_type_desc
 						, STUFF((SELECT '', '' + dbr.name 
 									FROM sys.database_principals dbr 
-                                        LEFT JOIN sys.database_role_members AS drm 
-                                                ON drm.member_principal_id = dbp.principal_id
+										LEFT JOIN sys.database_role_members AS drm 
+												ON drm.member_principal_id = dbp.principal_id
 									WHERE dbr.principal_id = drm.role_principal_id
 									FOR XML PATH('''')),1,2,'''') AS database_roles
 
@@ -186,49 +193,62 @@ WHILE @countDBs <= @numDBs BEGIN
 											ON drm.member_principal_id = dbp.principal_id
 									WHERE dbr.principal_id = drm.role_principal_id
 									FOR XML PATH('''')) AS DROP_DB_ROLE
-						, ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + ''GO'' + CHAR(10) + ''DROP USER '' + QUOTENAME(dbp.name) + CHAR(10) + ''GO''  AS DROP_DB_USER
-                        FROM sys.database_principals AS dbp 
-                                LEFT JOIN sys.database_permissions AS dp 
-                                        ON dp.grantee_principal_id = dbp.principal_id 
-                                            AND dp.type = ''CO''
-                        WHERE ( dbp.type IN (''U'', ''S'', ''G'', ''C'', ''K'') -- S = SQL user, U = Windows user, G = Windows group, C = User mapped to a certificate, K = User mapped to an asymmetric key
-                                        AND dbp.name LIKE ISNULL(@db_principal_name, dbp.name) )
-                        -- To get database roles 
-                                OR ( dbp.type IN (''R'')
-                                        AND dbp.name LIKE ISNULL(@db_principal_name, dbp.name)
-                                        -- AND dbp.principal_id < 16384 
+
+						, ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + 
+							''GO'' + CHAR(10) + 
+							CHAR(9) + ''DROP USER '' + QUOTENAME(dbp.name) + CHAR(10) + 
+							''GO''  AS DROP_DB_USER
+
+						, ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + 
+							''GO'' + CHAR(10) + 
+							''IF DATABASE_PRINCIPAL_ID ('''' + QUOTENAME(dbp.name) + '''') IS NULL BEGIN '' + CHAR(10) + 
+							CHAR(9) + ''CREATE USER '' + QUOTENAME(dbp.name) + CHAR(10) + 
+							''END'' + CHAR(10) + 
+							''GO'' AS CREATE_DB_USER
+
+						FROM sys.database_principals AS dbp 
+								LEFT JOIN sys.database_permissions AS dp 
+										ON dp.grantee_principal_id = dbp.principal_id 
+											AND dp.type = ''CO''
+						WHERE ( dbp.type IN (''U'', ''S'', ''G'', ''C'', ''K'', ''X'', ''E'') 
+						/* S = SQL user, U = Windows user, G = Windows group, C = User mapped to a certificate, K = User mapped to an asymmetric key, X = EXTERNAL_GROUP, E = EXTERNAL_USER */
+										AND dbp.name LIKE ISNULL(@db_principal_name, dbp.name) )
+						-- To get database roles 
+								OR ( dbp.type IN (''R'')
+										AND dbp.name LIKE ISNULL(@db_principal_name, dbp.name)
+										-- AND dbp.principal_id < 16384 
 										) -- db_owner
-              
-                    -- get a line per database user / object / permission state
-                    ;WITH users_with_permission AS (
-                        SELECT DISTINCT 
-                                        p.grantee_principal_id
-                                        , p.class
-                                        , CASE WHEN p.class = 1 THEN o.type_desc ELSE p.class_desc END AS class_desc
-                                        , p.major_id               
-                                        , p.state
-                                        , p.state_desc
-                                        , dbp.principal_sid
-                                        , dbp.principal_name
-                                        , dbp.principal_type_desc
-                                FROM sys.database_permissions AS p
-                                        INNER JOIN #all_db_users AS dbp
-                                            ON p.grantee_principal_id = dbp.principal_id
-                                        LEFT JOIN sys.objects AS o
-                                            ON o.object_id = p.major_id
-                                WHERE dbp.database_id = DB_ID()
-                    )
-                    INSERT INTO #all_db_permissions (
-                        database_id
-                        , principal_sid
-                        , principal_name
-                        , principal_type_desc
-                        , class_desc
-                        , object_name
-                        , permission_list
-                        , permission_state_desc
-                        , REVOKE_PERMISSION
-                    )
+			
+					-- get a line per database user / object / permission state
+					;WITH users_with_permission AS (
+						SELECT DISTINCT 
+										p.grantee_principal_id
+										, p.class
+										, CASE WHEN p.class = 1 THEN o.type_desc ELSE p.class_desc END AS class_desc
+										, p.major_id               
+										, p.state
+										, p.state_desc
+										, dbp.principal_sid
+										, dbp.principal_name
+										, dbp.principal_type_desc
+								FROM sys.database_permissions AS p
+										INNER JOIN #all_db_users AS dbp
+											ON p.grantee_principal_id = dbp.principal_id
+										LEFT JOIN sys.objects AS o
+											ON o.object_id = p.major_id
+								WHERE dbp.database_id = DB_ID()
+					)
+					INSERT INTO #all_db_permissions (
+						database_id
+						, principal_sid
+						, principal_name
+						, principal_type_desc
+						, class_desc
+						, object_name
+						, permission_list
+						, permission_state_desc
+						, REVOKE_PERMISSION
+					)
 				SELECT 
 					DB_ID() AS [database_id]
 					, p.principal_sid
@@ -236,10 +256,10 @@ WHILE @countDBs <= @numDBs BEGIN
 					, p.principal_type_desc
 					, p.class_desc
 					,	CASE
-							WHEN p.class = 0 THEN QUOTENAME(DB_NAME())
-							WHEN p.class = 1 THEN QUOTENAME(OBJECT_SCHEMA_NAME(p.major_id)) + ''.'' + QUOTENAME(OBJECT_NAME(p.major_id))
-							WHEN p.class = 3 THEN QUOTENAME(sch.name)
-							WHEN p.class = 6 THEN QUOTENAME(tt.name)
+							WHEN p.class = 0 THEN ''DATABASE''
+							WHEN p.class = 1 THEN ''OBJECT::''	 + QUOTENAME(OBJECT_SCHEMA_NAME(p.major_id)) + ''.'' + QUOTENAME(OBJECT_NAME(p.major_id))
+							WHEN p.class = 3 THEN ''SCHEMA::''	 + QUOTENAME(sch.name)
+							WHEN p.class = 6 THEN ''TYPE::''	 + QUOTENAME(SCHEMA_NAME(tt.schema_id)) + ''.'' + QUOTENAME(tt.name)
 						END AS [object_name]
 					,	STUFF(
 							(SELECT 
@@ -351,8 +371,8 @@ WHILE @countDBs <= @numDBs BEGIN
 						LEFT JOIN sys.table_types AS tt
 							ON tt.user_type_id = p.major_id
 						-- To do, add joins to display info for each class
-		              
-            ');
+					
+			');
 
 	--SELECT @sqlstring
 	EXECUTE sp_executesql @sqlstring;
@@ -360,29 +380,30 @@ WHILE @countDBs <= @numDBs BEGIN
 	SET @countDBs = @countDBs + 1;
 END;
 
-SELECT DB_NAME (dbp.database_id)							 AS database_name
-	, dbp.principal_name
-	, dbp.principal_type_desc
-	, dbp.default_schema_name
-	, CASE WHEN dbp.has_db_access = 1 THEN 'Yes' ELSE 'No' END AS has_db_access
-	, CASE WHEN sp.name IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'N/A' ELSE sp.name END	AS login_name
-	, CASE WHEN sp.type_desc IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'CONTAINED USER' ELSE sp.name END	AS login_type
-	, dbp.database_roles
-	, ISNULL(dbp.included_users, '') AS included_users
-	, dbp.DROP_USER_SCHEMA
-	, dbp.CREATE_DB_ROLE
-	, dbp.DROP_DB_ROLE
-	, dbp.DROP_DB_USER
-	FROM #all_db_users					 AS dbp
-			LEFT JOIN sys.server_principals AS sp
-				ON sp.sid = dbp.principal_sid
-	WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
-		AND (@onlyOrphanUsers = 0 OR
-			(dbp.principal_type_desc = 'SQL_USER' 
-				AND sp.name IS NULL 
-				AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
-			)
-	ORDER BY database_name ASC, dbp.principal_name ASC;
+SELECT DB_NAME (dbp.database_id) AS database_name
+		, dbp.principal_name
+		, dbp.principal_type_desc
+		, dbp.default_schema_name
+		, CASE WHEN dbp.has_db_access = 1 THEN 'Yes' ELSE 'No' END AS has_db_access
+		, CASE WHEN sp.name IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'N/A' ELSE sp.name END	AS login_name
+		, CASE WHEN sp.type_desc IS NULL AND dbp.authentication_type = 'DATABASE' THEN 'CONTAINED USER' ELSE sp.name END	AS login_type
+		, dbp.database_roles
+		, ISNULL(dbp.included_users, '') AS included_users
+		, dbp.DROP_USER_SCHEMA
+		, dbp.CREATE_DB_ROLE
+		, dbp.DROP_DB_ROLE
+		, dbp.CREATE_DB_USER
+		, dbp.DROP_DB_USER
+FROM #all_db_users					 AS dbp
+		LEFT JOIN sys.server_principals AS sp
+			ON sp.sid = dbp.principal_sid
+WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
+	AND (@onlyOrphanUsers = 0 OR
+		(dbp.principal_type_desc = 'SQL_USER' 
+			AND sp.name IS NULL 
+			AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
+		)
+ORDER BY database_name ASC, dbp.principal_name ASC;
 
 SELECT DB_NAME (dbp.database_id) AS database_name
 		, dbp.principal_name
@@ -393,16 +414,17 @@ SELECT DB_NAME (dbp.database_id) AS database_name
 		, dbp.object_name
 		, dbp.permission_list
 		, dbp.permission_state_desc
+		, REPLACE(dbp.REVOKE_PERMISSION, 'REVOKE', 'GRANT') AS GRANT_PERMISSION
 		, dbp.REVOKE_PERMISSION
-	FROM #all_db_permissions			 AS dbp
-			LEFT JOIN sys.server_principals AS sp
-				ON sp.sid = dbp.principal_sid
-	WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
-		AND (@onlyOrphanUsers = 0 OR
-			(dbp.principal_type_desc = 'SQL_USER' 
-				AND sp.name IS NULL 
-				AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
-			)
-	ORDER BY database_name, dbp.principal_name, dbp.class_desc, dbp.object_name;
+FROM #all_db_permissions			 AS dbp
+		LEFT JOIN sys.server_principals AS sp
+			ON sp.sid = dbp.principal_sid
+WHERE ISNULL (sp.name, '') LIKE COALESCE (@srv_principal_name, sp.name, '')
+	AND (@onlyOrphanUsers = 0 OR
+		(dbp.principal_type_desc = 'SQL_USER' 
+			AND sp.name IS NULL 
+			AND dbp.principal_name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys'))
+		)
+ORDER BY database_name, dbp.principal_name, dbp.class_desc, dbp.object_name;
 
 GO
