@@ -60,7 +60,7 @@ DECLARE @drop_database nvarchar(MAX);
 DECLARE @sql nvarchar(MAX);
 DECLARE @msg nvarchar(MAX);
 
-DECLARE @ProductMajorVersion int = (SELECT CONVERT(int, SERVERPROPERTY('ProductMajorVersion')));
+DECLARE @ProductMajorVersion int = (CONVERT(int, SERVERPROPERTY('ProductMajorVersion')));
 
 -- Set @replace to N if not specified
 SET @replace	= ISNULL(@replace, 'N');
@@ -253,6 +253,13 @@ CREATE TABLE #fileexist (
 
 INSERT INTO #backupList (subdirectory, depth, [file])
 EXECUTE sys.xp_dirtree @folderPath , 0, 1;
+
+IF NOT EXISTS (SELECT * FROM #backupList)
+BEGIN
+	SET @msg = 'SQL Server does not have access to the given folder / file, please check the permissions to verify the system account is owner of that folder';
+	RAISERROR (@msg, 16, 1, 1);
+	RETURN;
+END;
 
 DECLARE c CURSOR LOCAL STATIC READ_ONLY 
 FOR SELECT subdirectory FROM #backupList

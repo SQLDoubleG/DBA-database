@@ -201,7 +201,7 @@ WHILE @countDBs <= @numDBs BEGIN
 
 						, ''USE '' + QUOTENAME(DB_NAME()) + CHAR(10) + 
 							''GO'' + CHAR(10) + 
-							''IF DATABASE_PRINCIPAL_ID ('''' + QUOTENAME(dbp.name) + '''') IS NULL BEGIN '' + CHAR(10) + 
+							''IF DATABASE_PRINCIPAL_ID ('''''' + dbp.name + '''''') IS NULL BEGIN '' + CHAR(10) + 
 							CHAR(9) + ''CREATE USER '' + QUOTENAME(dbp.name) + CHAR(10) + 
 							''END'' + CHAR(10) + 
 							''GO'' AS CREATE_DB_USER

@@ -67,20 +67,19 @@ GO
 GO
 
 DECLARE 
-	@dbname				SYSNAME = NULL
-	, @schemaName		SYSNAME = NULL
-	, @tableName		SYSNAME = NULL
-	, @columnName		SYSNAME = NULL
-	, @onlyTablesList	BIT		= 1
-	, @sortOrder		SYSNAME = NULL
+	@dbname				sysname = NULL
+	, @schemaName		sysname = NULL
+	, @tableName		sysname = NULL
+	, @columnName		sysname = NULL
+	, @onlyTablesList	bit		= 1
+	, @sortOrder		sysname = NULL
 
 -- ============================================= 
 -- Do not modify below this line
 --	unless you know what you are doing!!
 -- ============================================= 
 
-DECLARE @EngineEdition	INT	= CONVERT(INT, SERVERPROPERTY('EngineEdition'))
-DECLARE @numericVersion INT = CONVERT(INT, PARSENAME(CONVERT(SYSNAME, SERVERPROPERTY('ProductVersion')),4))
+DECLARE @EngineEdition	int	= CONVERT(int, SERVERPROPERTY('EngineEdition'))
 
 IF @EngineEdition = 5 BEGIN
 -- Azure SQL Database, the script can't run on multiple databases
@@ -96,41 +95,41 @@ IF OBJECT_ID('tempdb..#index_usage_stats') 	IS NOT NULL DROP TABLE #index_usage_
 IF OBJECT_ID('tempdb..#table_storage') 		IS NOT NULL DROP TABLE #table_storage
 
 CREATE TABLE #resultTables 
-	( databaseName			SYSNAME			NULL 
-	, schemaName			SYSNAME			NULL 
-	, tableName				SYSNAME			NULL 
-	, tableType				SYSNAME			NULL 
-	, row_count				BIGINT			NULL 
-	, TotalSpaceMB			DECIMAL(15,3)	NULL 
-	, DataSpaceMB			DECIMAL(15,3)	NULL 
-	, IndexSpaceMB			DECIMAL(15,3)	NULL 
-	, UnusedSpaceMB			DECIMAL(15,3)	NULL 
-	, IN_ROW_DATA_MB		DECIMAL(15,3)	NULL
-	, LOB_DATA_MB			DECIMAL(15,3)	NULL
-	, ROW_OVERFLOW_DATA_MB	DECIMAL(15,3)	NULL
-	, TableTriggers			VARCHAR(500)	NULL 
-	, LastUserRead			DATETIME		NULL 
-	, LastUserUpdate		DATETIME		NULL 
-	, UserReads				BIGINT			NULL 
-	, UserUpdates			BIGINT			NULL 
-	, LastUserLookup		DATETIME		NULL 
-	, Column_id				INT				NULL 
-	, columnName			SYSNAME			NULL 
-	, DataType				SYSNAME			NULL 
-	, Size					VARCHAR(30)		NULL 
-	, IsIdentity			VARCHAR(3)		NULL 
-	, Mandatory				VARCHAR(3)		NULL 
-	, DefaultValue			NVARCHAR(MAX)	NULL 
-	, CheckValue			NVARCHAR(MAX)	NULL
-	, PrimaryKey			VARCHAR(30)		NULL 
-	, ForeignKey			VARCHAR(3)		NULL 
-	, IsComputed			VARCHAR(3)		NULL 
-	, Collation				SYSNAME			NULL 
-	, [definition]			NVARCHAR(MAX)	NULL 
-	, Filestream			VARCHAR(3)		NULL 
-	, ReferencedColumn		NVARCHAR(256)	NULL 
-	, TableDescription		SQL_VARIANT		NULL 
-	, ColDescription		SQL_VARIANT		NULL
+	( databaseName			sysname			NULL 
+	, schemaName			sysname			NULL 
+	, tableName				sysname			NULL 
+	, tableType				sysname			NULL 
+	, row_count				bigint			NULL 
+	, TotalSpaceMB			decimal(15,3)	NULL 
+	, DataSpaceMB			decimal(15,3)	NULL 
+	, IndexSpaceMB			decimal(15,3)	NULL 
+	, UnusedSpaceMB			decimal(15,3)	NULL 
+	, IN_ROW_DATA_MB		decimal(15,3)	NULL
+	, LOB_DATA_MB			decimal(15,3)	NULL
+	, ROW_OVERFLOW_DATA_MB	decimal(15,3)	NULL
+	, TableTriggers			varchar(500)	NULL 
+	, LastUserRead			datetime		NULL 
+	, LastUserUpdate		datetime		NULL 
+	, UserReads				bigint			NULL 
+	, UserUpdates			bigint			NULL 
+	, LastUserLookup		datetime		NULL 
+	, Column_id				int				NULL 
+	, columnName			sysname			NULL 
+	, DataType				sysname			NULL 
+	, Size					varchar(30)		NULL 
+	, IsIdentity			varchar(3)		NULL 
+	, Mandatory				varchar(3)		NULL 
+	, DefaultValue			nvarchar(MAX)	NULL 
+	, CheckValue			nvarchar(MAX)	NULL
+	, PrimaryKey			varchar(30)		NULL 
+	, ForeignKey			varchar(3)		NULL 
+	, IsComputed			varchar(3)		NULL 
+	, Collation				sysname			NULL 
+	, [definition]			nvarchar(MAX)	NULL 
+	, Filestream			varchar(3)		NULL 
+	, ReferencedColumn		nvarchar(256)	NULL 
+	, TableDescription		sql_variant		NULL 
+	, ColDescription		sql_variant		NULL
 	, ColIndexes			nvarchar(MAX)	NULL) 
 	
 SELECT *  
@@ -139,36 +138,36 @@ SELECT *
 	WHERE 1=0 
 
 CREATE TABLE #db_triggers ( 
-parent_id			INT 
-, trigger_type		NVARCHAR(4000)) 
+parent_id			int 
+, trigger_type		nvarchar(4000)) 
 	
 CREATE TABLE #index_usage_stats ( 
-object_id			INT 
-, last_user_read	DATETIME	NULL
-, last_user_update	DATETIME	NULL
-, user_reads		BIGINT		NULL
-, user_updates		BIGINT		NULL) 
+object_id			int 
+, last_user_read	datetime	NULL
+, last_user_update	datetime	NULL
+, user_reads		bigint		NULL
+, user_updates		bigint		NULL) 
 
 CREATE TABLE #table_storage(
-[object_id]					INT NOT NULL
-, [index_id]				INT NOT NULL
-, [row_count]				BIGINT NOT NULL
-, [TotalSpaceUsed]			DECIMAL(15,3)
-, [DataSpaceUsed]			DECIMAL(15,3)
-, [IndexSpaceUsed]			DECIMAL(15,3)
-, [UnusedSpace]				DECIMAL(15,3)
-, [IN_ROW_DATA_MB]			DECIMAL(15,3)
-, [LOB_DATA_MB]				DECIMAL(15,3)
-, [ROW_OVERFLOW_DATA_MB]	DECIMAL(15,3)
+[object_id]					int NOT NULL
+, [index_id]				int NOT NULL
+, [row_count]				bigint NOT NULL
+, [TotalSpaceUsed]			decimal(15,3)
+, [DataSpaceUsed]			decimal(15,3)
+, [IndexSpaceUsed]			decimal(15,3)
+, [UnusedSpace]				decimal(15,3)
+, [IN_ROW_DATA_MB]			decimal(15,3)
+, [LOB_DATA_MB]				decimal(15,3)
+, [ROW_OVERFLOW_DATA_MB]	decimal(15,3)
 )
 
-DECLARE @databases TABLE  
-	( ID				INT IDENTITY 
-	, dbname			SYSNAME) 
+DECLARE @databases table  
+	( ID				int IDENTITY 
+	, dbname			sysname) 
 		
-DECLARE @sqlstring		NVARCHAR(MAX) 
-		, @countDBs		INT = 1 
-		, @numDBs		INT 
+DECLARE @sqlstring		nvarchar(MAX) 
+		, @countDBs		int = 1 
+		, @numDBs		int 
 
 INSERT INTO @databases  
 	SELECT TOP 100 PERCENT name  
@@ -187,7 +186,7 @@ WHILE @countDBs <= @numDBs BEGIN
 		WHERE ID = @countDBs 
 
 	SET @sqlstring = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
-		+ CONVERT(NVARCHAR(MAX), N'
+		+ CONVERT(nvarchar(MAX), N'
 		SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
 		
 		TRUNCATE TABLE #db_triggers 
@@ -355,7 +354,7 @@ WHILE @countDBs <= @numDBs BEGIN
 	-- SELECT @sqlstring
 	-- Insert all tables with their descriptions 
 	BEGIN TRY
-	EXECUTE sp_executesql 
+	EXECUTE sys.sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME'
 				, @schemaName = @schemaName  
@@ -367,7 +366,7 @@ WHILE @countDBs <= @numDBs BEGIN
 	IF @onlyTablesList = 0 BEGIN  
 
 		SET @sqlstring = CASE WHEN @EngineEdition <> 8 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
-			+ CONVERT(NVARCHAR(MAX), N'
+			+ CONVERT(nvarchar(MAX), N'
 			
 			INSERT INTO #resultColumns 
 					(databaseName 
@@ -487,7 +486,7 @@ WHILE @countDBs <= @numDBs BEGIN
 		PRINT @sqlstring 
 		-- Insert all Columns for all tables			 
 		BEGIN TRY
-		EXECUTE sp_executesql 
+		EXECUTE sys.sp_executesql 
 				@stmt = @sqlstring
 				, @params = N'@schemaName SYSNAME, @tableName SYSNAME, @columnName SYSNAME'
 				, @schemaName = @schemaName  
@@ -504,24 +503,24 @@ END
 
 
 IF @onlyTablesList = 1 BEGIN 
-	SELECT ISNULL(databaseName,'') AS databaseName 
-			, ISNULL(schemaName,'') AS schemaName 
-			, ISNULL(tableName,'') AS tableName 
-			, ISNULL(tableType,'') AS tableType 
-			, ISNULL(CONVERT(VARCHAR,row_count), '') AS row_count 
-			, ISNULL(CONVERT(VARCHAR,TotalSpaceMB), '') AS TotalSpaceMB 
-			, ISNULL(CONVERT(VARCHAR,DataSpaceMB), '') AS DataSpaceMB 
-			, ISNULL(CONVERT(VARCHAR,IndexSpaceMB), '') AS IndexSpaceMB 
-			, ISNULL(CONVERT(VARCHAR,UnusedSpaceMB), '') AS UnusedSpaceMB 
-			, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
-			, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
-			, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
-			, ISNULL(CONVERT(VARCHAR,LastUserRead, 113), '') AS LastUserRead 
-			, ISNULL(CONVERT(VARCHAR,LastUserUpdate, 113), '') AS LastUserUpdate 
-			, ISNULL(CONVERT(VARCHAR,UserReads), '') AS UserReads
-			, ISNULL(CONVERT(VARCHAR,UserUpdates), '') AS UserUpdates
-			, ISNULL(TableTriggers,'') AS TableTriggers 
-			, ISNULL(TableDescription,'') AS TableDescription 
+	SELECT ISNULL(r.databaseName,'') AS databaseName 
+			, ISNULL(r.schemaName,'') AS schemaName 
+			, ISNULL(r.tableName,'') AS tableName 
+			, ISNULL(r.tableType,'') AS tableType 
+			, ISNULL(CONVERT(varchar(30),r.row_count), '') AS row_count 
+			, ISNULL(CONVERT(varchar(30),r.TotalSpaceMB), '') AS TotalSpaceMB 
+			, ISNULL(CONVERT(varchar(30),r.DataSpaceMB), '') AS DataSpaceMB 
+			, ISNULL(CONVERT(varchar(30),r.IndexSpaceMB), '') AS IndexSpaceMB 
+			, ISNULL(CONVERT(varchar(30),r.UnusedSpaceMB), '') AS UnusedSpaceMB 
+			, ISNULL(CONVERT(varchar(30),r.IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
+			, ISNULL(CONVERT(varchar(30),r.LOB_DATA_MB), '') AS LOB_DATA_MB 
+			, ISNULL(CONVERT(varchar(30),r.ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
+			, ISNULL(CONVERT(varchar(30),r.LastUserRead, 113), '') AS LastUserRead 
+			, ISNULL(CONVERT(varchar(30),r.LastUserUpdate, 113), '') AS LastUserUpdate 
+			, ISNULL(CONVERT(varchar(30),r.UserReads), '') AS UserReads
+			, ISNULL(CONVERT(varchar(30),r.UserUpdates), '') AS UserUpdates
+			, ISNULL(r.TableTriggers,'') AS TableTriggers 
+			, ISNULL(r.TableDescription,'') AS TableDescription 
 		FROM #resultTables  AS r
 		ORDER BY 
 				CASE WHEN @sortOrder = 'size' THEN r.TotalSpaceMB 
@@ -616,44 +615,44 @@ ELSE BEGIN
 					, ColIndexes 
 				FROM #resultColumns 
 		) 
-		SELECT ISNULL(databaseName,'') AS databaseName 
-				, ISNULL(schemaName,'') AS schemaName 
-				, ISNULL(tableName,'') AS tableName 
-				, ISNULL(tableType,'') AS tableType 
-				, ISNULL(CONVERT(VARCHAR,row_count),'') AS row_count 
-				, ISNULL(CONVERT(VARCHAR,TotalSpaceMB),'') AS TotalSpaceMB 
-				, ISNULL(CONVERT(VARCHAR,DataSpaceMB),'') AS DataSpaceMB 
-				, ISNULL(CONVERT(VARCHAR,IndexSpaceMB),'') AS IndexSpaceMB 
-				, ISNULL(CONVERT(VARCHAR,UnusedSpaceMB),'') AS UnusedSpaceMB 
-				, ISNULL(CONVERT(VARCHAR,IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
-				, ISNULL(CONVERT(VARCHAR,LOB_DATA_MB), '') AS LOB_DATA_MB 
-				, ISNULL(CONVERT(VARCHAR,ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
-				, ISNULL(CONVERT(VARCHAR,LastUserRead, 113), '') AS LastUserRead 
-				, ISNULL(CONVERT(VARCHAR,LastUserUpdate, 113), '') AS LastUserUpdate 
-				, ISNULL(CONVERT(VARCHAR,UserReads), '') AS UserReads
-				, ISNULL(CONVERT(VARCHAR,UserUpdates), '') AS UserUpdates
-				, ISNULL(TableTriggers,'') AS TableTriggers 
-				, ISNULL(columnName,'') AS columnName 
-				, ISNULL(DataType,'') AS DataType 
-				, ISNULL(Size,'') AS Size 
-				, ISNULL(IsIdentity,'') AS IsIdentity 
-				, ISNULL(Mandatory,'') AS Mandatory 
-				, ISNULL(DefaultValue,'') AS DefaultValue 
-				, ISNULL(PrimaryKey,'') AS PrimaryKey 
-				, ISNULL(IsComputed,'') AS IsComputed 
-				, ISNULL(Collation,'') AS Collation 
-				, ISNULL([definition],'') AS [Definition] 
-				, ISNULL(ForeignKey,'') AS ForeignKey 
-				, ISNULL(ReferencedColumn,'') AS ReferencedColumn 
-				, ISNULL(Filestream,'') AS Filestream			 
-				, ISNULL(TableDescription,'') AS TableDescription 
-				, ISNULL(ColDescription,'') AS ColDescription 
-				, ISNULL(ColIndexes,'') AS ColIndexes
+		SELECT ISNULL(cte.databaseName,'') AS databaseName 
+				, ISNULL(cte.schemaName,'') AS schemaName 
+				, ISNULL(cte.tableName,'') AS tableName 
+				, ISNULL(cte.tableType,'') AS tableType 
+				, ISNULL(CONVERT(varchar(30),cte.row_count),'') AS row_count 
+				, ISNULL(CONVERT(varchar(30),cte.TotalSpaceMB),'') AS TotalSpaceMB 
+				, ISNULL(CONVERT(varchar(30),cte.DataSpaceMB),'') AS DataSpaceMB 
+				, ISNULL(CONVERT(varchar(30),cte.IndexSpaceMB),'') AS IndexSpaceMB 
+				, ISNULL(CONVERT(varchar(30),cte.UnusedSpaceMB),'') AS UnusedSpaceMB 
+				, ISNULL(CONVERT(varchar(30),cte.IN_ROW_DATA_MB), '') AS IN_ROW_DATA_MB 
+				, ISNULL(CONVERT(varchar(30),cte.LOB_DATA_MB), '') AS LOB_DATA_MB 
+				, ISNULL(CONVERT(varchar(30),cte.ROW_OVERFLOW_DATA_MB), '') AS ROW_OVERFLOW_DATA_MB 
+				, ISNULL(CONVERT(varchar(30),cte.LastUserRead, 113), '') AS LastUserRead 
+				, ISNULL(CONVERT(varchar(30),cte.LastUserUpdate, 113), '') AS LastUserUpdate 
+				, ISNULL(CONVERT(varchar(30),cte.UserReads), '') AS UserReads
+				, ISNULL(CONVERT(varchar(30),cte.UserUpdates), '') AS UserUpdates
+				, ISNULL(cte.TableTriggers,'') AS TableTriggers 
+				, ISNULL(cte.columnName,'') AS columnName 
+				, ISNULL(cte.DataType,'') AS DataType 
+				, ISNULL(cte.Size,'') AS Size 
+				, ISNULL(cte.IsIdentity,'') AS IsIdentity 
+				, ISNULL(cte.Mandatory,'') AS Mandatory 
+				, ISNULL(cte.DefaultValue,'') AS DefaultValue 
+				, ISNULL(cte.PrimaryKey,'') AS PrimaryKey 
+				, ISNULL(cte.IsComputed,'') AS IsComputed 
+				, ISNULL(cte.Collation,'') AS Collation 
+				, ISNULL(cte.definition,'') AS [Definition] 
+				, ISNULL(cte.ForeignKey,'') AS ForeignKey 
+				, ISNULL(cte.ReferencedColumn,'') AS ReferencedColumn 
+				, ISNULL(cte.Filestream,'') AS Filestream			 
+				, ISNULL(cte.TableDescription,'') AS TableDescription 
+				, ISNULL(cte.ColDescription,'') AS ColDescription 
+				, ISNULL(cte.ColIndexes,'') AS ColIndexes
 			FROM cte 
 			ORDER BY databaseName 
 				, schemaName 
 				, tableName 
-				, Column_id 
+				, cte.Column_id 
 	
 END 
 
