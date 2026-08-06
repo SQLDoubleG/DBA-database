@@ -86,7 +86,7 @@ GO
 -- =============================================
 */
 
-DECLARE @dbname	    sysname			= 'dbname';
+DECLARE @dbname	    nvarchar(max)	= 'dbname[,dbname2,...]'; /* comma separated list of databases, if NULL will go through all databases with query store enabled */
 DECLARE @dateFrom	datetime2		= DATEADD(DAY, -7, GETUTCDATE());
 DECLARE @dateTo		datetime2		= GETUTCDATE();
 DECLARE @topNrows	int				= 10;
@@ -94,7 +94,7 @@ DECLARE @object_name nvarchar(261)	= NULL;
 DECLARE @query_id	int				= NULL;
 DECLARE @plan_id	int				= NULL;
 DECLARE @query_hash	binary(8)		= NULL;
-DECLARE @GroupBy	nvarchar(60)	= 'plan_id'; /* plan_id (default), query_id, query_hash */
+DECLARE @GroupBy	nvarchar(60)	= 'query_hash'; /* plan_id, query_id, query_hash (default) */
 DECLARE @OrderBy	sysname			= 'total_cpu';
 
 /*
@@ -234,17 +234,26 @@ IF @EngineEdition = 5 BEGIN
 	SET @dbname	= DB_NAME();
 END;
 
+;WITH cte AS (
+	SELECT LTRIM(RTRIM(value)) AS dbname
+	FROM STRING_SPLIT(@dbname, ',')
+)
 INSERT INTO @databases
 	SELECT TOP (100) PERCENT name
 		FROM sys.databases
 		WHERE is_query_store_on = 1
-			AND name LIKE ISNULL(@dbname, name)
+			AND (name IN (SELECT dbname FROM cte) OR NOT EXISTS (SELECT dbname FROM cte))
 		ORDER BY name ASC;	 
 SET @numDBs = @@ROWCOUNT; 
 
-IF COALESCE(@object_name, CONVERT(nvarchar(261), @query_id), CONVERT(nvarchar(261), @query_hash), CONVERT(nvarchar(261), @plan_id)) IS NOT NULL
+IF COALESCE(@object_name, CONVERT(nvarchar(261), @query_id), CONVERT(nvarchar(261), @plan_id)) IS NOT NULL
 BEGIN 
 	SET @GroupBy = 'plan_id';
+END
+ /* This is to avoid having multiple rows per interval due to different query ids / plan ids */
+ELSE IF @query_hash IS NOT NULL
+BEGIN
+	SET @GroupBy = 'query_hash';
 END
 
 IF @GroupBy NOT IN ('plan_id', 'query_id', 'query_hash') BEGIN 
@@ -393,7 +402,7 @@ IF @numericVersion > 13 BEGIN
 		END;
 		IF @object_name IS NOT NULL 
 		BEGIN
-			SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
+			SET @whereclause += CHAR(10) + 'AND q.object_id = @object_id';
 		END;
 		IF @query_hash IS NOT NULL 
 		BEGIN
@@ -444,8 +453,9 @@ IF @object_id IS NULL AND @object_name IS NOT NULL BEGIN
 	RETURN;
 END;
 
-DROP TABLE IF EXISTS #db_total_execs
-DROP TABLE IF EXISTS #db_avg_execs
+DROP TABLE IF EXISTS #db_total_execs;
+DROP TABLE IF EXISTS #db_avg_execs;
+DROP TABLE IF EXISTS #db_plan_query;
 
 SELECT qp.plan_id,
 	   qp.query_id,
@@ -456,7 +466,7 @@ FROM sys.query_store_plan AS qp
 	INNER JOIN sys.query_store_query AS q
 		ON q.query_id = qp.query_id;
 
-CREATE CLUSTERED INDEX #CIX ON #db_plan_query (plan_id)
+CREATE CLUSTERED INDEX #CIX ON #db_plan_query (plan_id);
 
 -------------------------------
 -- total execution counts per plan per interval
@@ -601,7 +611,7 @@ WHILE @countDBs <= @numDBs BEGIN
 	END;
 	IF @object_name IS NOT NULL 
 	BEGIN
-		SET @whereclause += CHAR(10) + 'AND qp.object_id = OBJECT_ID(@object_name)';
+		SET @whereclause += CHAR(10) + 'AND qp.object_id = @object_id';
 	END;
 	IF @query_hash IS NOT NULL 
 	BEGIN
@@ -850,7 +860,7 @@ WHILE @countDBs <= @numDBs BEGIN
 	END;
 	IF @object_name IS NOT NULL 
 	BEGIN
-		SET @whereclause += CHAR(10) + 'AND q.object_id = OBJECT_ID(@object_name)';
+		SET @whereclause += CHAR(10) + 'AND q.object_id = @object_id';
 	END;
 	IF @query_hash IS NOT NULL 
 	BEGIN
