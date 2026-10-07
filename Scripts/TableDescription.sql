@@ -365,7 +365,7 @@ WHILE @countDBs <= @numDBs BEGIN
 
 	IF @onlyTablesList = 0 BEGIN  
 
-		SET @sqlstring = CASE WHEN @EngineEdition <> 8 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
+		SET @sqlstring = CASE WHEN @EngineEdition <> 5 THEN N'USE ' + QUOTENAME(@dbname) ELSE '' END
 			+ CONVERT(nvarchar(MAX), N'
 			
 			INSERT INTO #resultColumns 
